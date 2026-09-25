@@ -1,17 +1,12 @@
 # Azure AI Platform — portfolio edition
 
-A personal engineering and learning project: a small, production-shaped
+A small demo engineering project: a small, production-shaped
 Azure ML/AI platform built end to end with **Terraform**, **Azure Databricks**,
 **Azure DevOps pipelines**, **Unity Catalog**, **MLflow**, **Microsoft Foundry**
 and Python. It was designed, deployed and operated in a real Azure
 subscription over roughly twenty engineering phases; this repository is a
-**sanitized snapshot** of that work prepared for technical review.
+**sanitized snapshot** of that work.
 
-> **What this is not.** It is not an employer's production system and it does
-> not claim business outcomes. Every subscription, tenant, workspace, storage
-> and service-principal identifier has been replaced with a synthetic example
-> (see [About this edition](#about-this-edition)). Nothing in this repository
-> can deploy to, or bill, a cloud account as published.
 
 ## What it demonstrates
 
@@ -94,28 +89,6 @@ docs/
   architecture.md · implementation-backlog.md
 ```
 
-## Where to start reviewing
-
-1. **`docs/adr/`** — read 0003 (CI/CD identity model), 0005 (four-environment
-   foundation), 0007 (LLM evaluation gates), 0008 (controlled agent) and 0013
-   (idle mode). They explain the *why* behind everything else.
-2. **`azure-pipelines/templates/terraform-cd-stages.yml` with
-   `scripts/ci/check-destructive-plan.sh` and `tests/ci/test-check-destructive-plan.sh`**
-   — the controlled-apply path: plan under a read-only identity, guard, apply
-   the exact reviewed plan under a per-environment identity, prove no drift.
-3. **`products/ml-lifecycle-demo/`** — `README.md`, `resources/job.yml`,
-   `src/validate_candidate.py`, `src/monitor.py`: how model promotion is kept
-   separate from code promotion and how retraining is gated.
-4. **`products/platform-engineering-assistant/`** —
-   `src/platform_engineering_assistant/{grounding.py,corpus/,agent/}` and
-   `evaluation/`: fail-closed grounding, corpus admission rules, credential
-   scanning, structured agent decisions with an explicit approval-required
-   outcome, and the evaluation policy files.
-5. **`infrastructure/modules/network/main.tf`,
-   `infrastructure/modules/storage_private_access/main.tf` and
-   `docs/runbooks/platform-idle-mode.md`** — a real cost-management change
-   made safely: conditional resources with `moved` blocks, exact-address guard
-   allow-listing, snapshot-driven workload suspension and verified restore.
 
 ## Local setup and offline checks (no Azure required)
 
@@ -236,43 +209,11 @@ All four environments were placed in idle mode with this code and verified;
 the runbook records the measured before/after inventory with example
 identifiers.
 
-## Limitations and what was verified where
 
-- **Historically deployed, not re-verified here:** the four Azure
-  environments, the Databricks promotion chain, Unity Catalog objects, the
-  Foundry account, Hosted Agent and the AKS GPU lab controls were built and
-  exercised in a private subscription. This edition cannot reach that
-  subscription; claims about live behaviour come from the ADRs and runbooks
-  written at the time.
-- **Verified in this edition:** Terraform formatting and validation of every
-  root and module (backend disabled), Ruff, the shell gate tests and the
-  offline unit suites listed above.
-- **Not included:** Terraform state, plans, workload snapshots, credentials,
-  datasets and model binaries, local tool configuration, agent-assistant
-  instruction files, and an unmerged branch that restructures the operations
-  agent into a LangGraph lab (it deletes a merged product and was left out
-  rather than combined).
-- **Included from unmerged feature branches, clearly additive:** the idle-mode
-  implementation (with all four environments switched to idle) and the
-  `pet-classifier` phases G1–G3 with the `aks-mlops` cost-control roots
-  (designed and planned, never applied).
-- The Foundry Hosted Agent's default-deny network path was never proven; ADR
-  0011 says so explicitly.
-- Sandbox is an experimentation class, not a promotion stage; its Unity
-  Catalog objects are not Terraform-managed.
 
 ## About this edition
 
 The content is a curated export of committed source from the operational
 repository, produced from an explicit allow-list of paths rather than a copy
-of a working directory. Identifiers were replaced consistently so that
-relationships between files still hold: the subscription ID, tenant-scoped
-service principal client IDs, Databricks workspace IDs and hosts, storage
-account, registry and Foundry account names, public IP addresses (now in
-documentation ranges), the Azure DevOps organisation and personal paths.
-Resource-group, Key Vault and workspace *logical* names follow the naming
-standard and were kept. Backend configuration files keep their structure with
-example account names. No credential of any kind existed in the source tree;
-the export was scanned with gitleaks and Trivy before publication.
+of a working directory. 
 
-No open-source licence has been granted for this repository at this time.
