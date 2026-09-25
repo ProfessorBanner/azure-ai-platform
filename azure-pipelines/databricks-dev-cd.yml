@@ -1,0 +1,112 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - products/hello-databricks/**
+      - azure-pipelines/databricks-dev-cd.yml
+      - azure-pipelines/databricks-cd-stg.yml
+      - azure-pipelines/databricks-cd-prod.yml
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  DATABRICKS_HOST: "https://adb-1000000000000002.12.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0001"
+
+steps:
+  - checkout: self
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(
+        echo "$IDENTITY" |
+        jq -r '.applicationId // .userName // .emails[0].value // empty'
+      )"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected deployment identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "Databricks DEV deployment identity verified."
+    displayName: Verify DEV CD OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # Platform idle-mode gate: reads the committed idle_mode default for dev
+  # (infrastructure/environments/dev/platform_mode.tf) and fails closed when the
+  # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+  # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+  - bash: |
+      set -euo pipefail
+      scripts/ci/check-platform-mode.sh dev
+    displayName: 'Platform mode gate (dev must be ACTIVE)'
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle validate -t dev
+    displayName: Validate DEV Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle plan -t dev
+    displayName: Plan DEV Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle deploy -t dev
+    displayName: Deploy DEV Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle run -t dev hello_databricks
+    displayName: Run DEV Integration Job
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+
+      databricks tables get \
+        dev.hello_databricks.bundle_test_output \
+        -o json \
+        | jq '{
+            full_name,
+            table_type,
+            data_source_format,
+            storage_location
+          }'
+    displayName: Verify DEV Output Table
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

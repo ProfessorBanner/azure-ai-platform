@@ -1,0 +1,9 @@
+# Local kind overrides: an image built on the host and side-loaded into the
+# cluster, never pulled from a registry.
+
+image:
+  repository: engineering-test-platform
+  tag: local
+  pullPolicy: IfNotPresent
+
+modelVersion: engineering-surrogate-local

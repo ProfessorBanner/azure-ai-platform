@@ -1,0 +1,48 @@
+{
+  "schema_version": "1",
+  "policy_version": "1",
+  "project": "pet-classifier-aks-mlops",
+  "limits": {
+    "project_limit_usd": "100",
+    "admission_limit_usd": "60",
+    "contingency_usd": "40",
+    "max_concurrent_sessions": 1,
+    "max_gpu_nodes": 1
+  },
+  "session": {
+    "active_target_minutes": 120,
+    "training_job_deadline_seconds": 1800,
+    "allowance_minutes": {
+      "provisioning": 20,
+      "image_pull": 10,
+      "deletion_delay": 20,
+      "watchdog_delay": 60
+    },
+    "note": "Allowances are planning margins for the reservation and the expiry, not guaranteed upper bounds on Azure billing or deletion latency. Expiry is measured from the reservation / start of provisioning."
+  },
+  "bounds": {
+    "egress_gb_per_session": "10",
+    "load_balancer_data_gb_per_session": "20",
+    "registry_days_per_session": 1,
+    "registry_storage_gb": "3",
+    "watchdog_minutes_per_session": 60,
+    "retained_storage_gb": "10",
+    "retained_months_reserved": 1
+  },
+  "retention": {
+    "retained_blob_expiry_days": 60,
+    "max_retained_gb": "10"
+  },
+  "evidence": {
+    "max_price_evidence_age_hours": 72,
+    "max_discovery_age_hours": 72,
+    "max_watchdog_verification_age_days": 30
+  },
+  "currency": {
+    "pricing_currency": "USD",
+    "billing_currency": "GBP",
+    "fx_allowance_ratio": "0.05",
+    "tax_allowance_ratio": "0.20",
+    "note": "The subscription bills in GBP; retail evidence is USD. Reservations stay in USD and add an explicit FX allowance; reconciled GBP invoices are converted with the recorded invoice rate. Taxes are excluded from retail prices and are reserved as an explicit ratio."
+  }
+}

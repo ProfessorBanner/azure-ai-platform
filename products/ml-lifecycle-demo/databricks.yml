@@ -1,0 +1,91 @@
+# ml-lifecycle-demo — governed Databricks Asset Bundle.
+#
+# Generated from products/_template. The structure follows the platform's proven
+# reference pattern: one source tree, one Bundle, three governed targets, and
+# every environment-owned value injected as a Bundle variable rather than written
+# into product code. See docs/platform/product-contract.md.
+
+bundle:
+  name: ml-lifecycle-demo
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the deployment target
+
+  schema:
+    description: Unity Catalog schema for the deployment target
+
+  job_compute_policy_id:
+    description: Databricks compute policy for the deployment target
+
+  run_as_service_principal_name:
+    description: Deployment service principal the job runs as in this target
+
+  monitor_schedule_pause_status:
+    description: >-
+      PAUSED or UNPAUSED for the ml_monitor_retrain schedule. The schedule is
+      DEPLOYED to every environment so that the three targets stay identical and
+      the cron is reviewed in code, but it is only UNPAUSED in PROD: a monitor
+      firing daily in DEV and STG would start clusters and retrain models nobody
+      asked about. Resuming one is a documented, reversible operator action —
+      see docs/platform/ml-operations-runbook.md.
+
+targets:
+  dev:
+    default: true
+
+    workspace:
+      host: https://adb-1000000000000002.12.azuredatabricks.net
+      root_path: /Workspace/Users/2222aaaa-0000-4000-8000-0000000d0001/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "2222aaaa-0000-4000-8000-0000000d0001"
+
+    variables:
+      catalog: dev
+      schema: ml_lifecycle_demo
+      monitor_schedule_pause_status: PAUSED
+      job_compute_policy_id: "0006468AF41B2231"
+      run_as_service_principal_name: "2222aaaa-0000-4000-8000-0000000d0001"
+
+  stg:
+    workspace:
+      host: https://adb-1000000000000003.4.azuredatabricks.net
+      root_path: /Workspace/Users/2222aaaa-0000-4000-8000-0000000d0002/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "2222aaaa-0000-4000-8000-0000000d0002"
+
+    variables:
+      catalog: stg
+      schema: ml_lifecycle_demo
+      monitor_schedule_pause_status: PAUSED
+      job_compute_policy_id: "000D2E7F6FCBE475"
+      run_as_service_principal_name: "2222aaaa-0000-4000-8000-0000000d0002"
+
+  prod:
+    # Production deployment mode: no per-user resource prefixing, no development
+    # markers, and run_as must be explicit. Pinning git.branch to main keeps the
+    # deployed bundle's recorded Git provenance fixed rather than inferred from
+    # whatever branch the agent happens to check out.
+    mode: production
+
+    git:
+      branch: main
+
+    workspace:
+      host: https://adb-1000000000000004.15.azuredatabricks.net
+      root_path: /Workspace/Users/2222aaaa-0000-4000-8000-0000000d0003/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "2222aaaa-0000-4000-8000-0000000d0003"
+
+    variables:
+      catalog: prod
+      schema: ml_lifecycle_demo
+      monitor_schedule_pause_status: UNPAUSED
+      job_compute_policy_id: "0018D81B708D02C3"
+      run_as_service_principal_name: "2222aaaa-0000-4000-8000-0000000d0003"

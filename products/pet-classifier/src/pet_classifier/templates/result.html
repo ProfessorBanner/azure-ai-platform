@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="result">
+    <h2>Top {{ result.predictions | length }} predictions</h2>
+    <p class="note">Model version <code>{{ result.model_version }}</code>{% if result.smoke %} (smoke model){% endif %}</p>
+    <table>
+      <thead>
+        <tr><th scope="col">Rank</th><th scope="col">Breed</th><th scope="col">Model score</th></tr>
+      </thead>
+      <tbody>
+        {% for item in result.predictions %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ item.class_name.replace("_", " ") }}</td>
+            <td>
+              <div class="bar" aria-hidden="true"><span style="width: {{ (item.score * 100) | round(1) }}%"></span></div>
+              {{ "%.3f" | format(item.score) }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p><a href="/">Classify another image</a></p>
+  </section>
+{% endblock %}

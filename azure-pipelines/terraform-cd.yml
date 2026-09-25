@@ -1,0 +1,273 @@
+# Terraform CD — CONTROLLED APPLY (backlog TFCD-2)
+#
+# Runs ONLY after a merge to `main`. It re-plans the exact merged commit with
+# the plan-only identity, publishes a sanitized human-readable plan, guards
+# against unexpected destructive changes, then — behind the Azure DevOps
+# Environment `azure-ai-platform-dev` manual approval — applies the EXACT saved
+# binary plan with the separate apply identity and verifies no drift remains.
+#
+# Identity separation (never mixed):
+#   Validate + Plan  -> sc-azure-terraform-plan  (Reader + Storage Blob Data
+#                       Contributor on the tfstate container; cannot mutate).
+#   Apply            -> sc-azure-terraform-apply (Contributor on
+#                       rg-aiplatform-bootstrap-dev + Storage Blob Data
+#                       Contributor on the tfstate container).
+#
+# Authentication is Microsoft Entra workload identity federation only: a fresh
+# OIDC token per run. NO storage account key, SAS token, client secret or PAT is
+# created, stored or accepted anywhere in this pipeline.
+#
+# Exact-plan promotion: the binary plan produced before approval is the only
+# thing applied. Apply never re-runs `terraform plan`. See
+# docs/runbooks/terraform-cd.md.
+
+name: terraform-cd-$(Date:yyyyMMdd)$(Rev:.r)
+
+# Trigger ONLY from `main` (post-merge). Never from feature branches; no PR
+# trigger. Changes reach `main` only via reviewed PR + CI build validation.
+#
+# Paths are scoped to this pipeline's actual dependencies so unrelated changes
+# (e.g. the platform component) do not queue a bootstrap no-op apply. This
+# inline pipeline depends only on: the bootstrap config, its backend config,
+# this file itself, the shared CI scripts, and the Makefile. It does NOT use
+# the shared CD stages template, so that path is intentionally absent.
+trigger:
+  batch: true # serialise queued runs; reduces state-lock contention
+  branches:
+    include:
+      - main
+    exclude:
+      - feature/*
+      - fix/*
+  paths:
+    include:
+      - bootstrap/**
+      - backend/dev.hcl
+      - azure-pipelines/terraform-cd.yml
+      - scripts/ci/**
+      - Makefile
+
+# No PR trigger: CD applies only merged `main` commits.
+pr: none
+
+variables:
+  - name: bootstrapResourceGroupName
+    value: 'rg-aiplatform-bootstrap-dev'
+  - name: bootstrapStorageAccountName
+    value: 'stexampletf000000'
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: tflintVersion
+    value: '0.53.0'
+  - name: trivyVersion
+    value: '0.69.3'
+  - name: terraformWorkingDirectory
+    value: 'bootstrap'
+  - name: backendConfig
+    value: 'backend/dev.hcl'
+  # Plan-only identity: used for validate + the post-merge plan. Cannot mutate.
+  - name: planServiceConnection
+    value: 'sc-azure-terraform-plan'
+  # Apply identity: used ONLY for `terraform apply` of the reviewed plan.
+  - name: applyServiceConnection
+    value: 'sc-azure-terraform-apply'
+  # Azure DevOps Environment providing the manual approval gate (pre-existing).
+  - name: environmentName
+    value: 'azure-ai-platform-dev'
+  # Short-lived internal artifact carrying the reviewed binary plan to apply.
+  - name: binaryPlanArtifact
+    value: 'terraform-plan-binary'
+  # Binary plan is staged OUTSIDE Build.ArtifactStagingDirectory so it is never
+  # bundled into the human-readable `terraform-plan` artifact.
+  - name: binaryPlanStagingDir
+    value: '$(Agent.TempDirectory)/binary-plan'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Validate + Plan (plan-only identity). Produces the reviewed plan.
+  # ---------------------------------------------------------------------------
+  - stage: validate_plan
+    displayName: 'Validate & plan (plan-only WIF)'
+    jobs:
+      - job: plan
+        displayName: 'Validate, plan (exact main commit), guard'
+        timeoutInMinutes: 30
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - checkout: self
+            clean: true
+            displayName: 'Checkout exact merged main commit'
+
+          - bash: |
+              set -euo pipefail
+              scripts/ci/install-tools.sh
+            displayName: 'Install pinned Terraform, TFLint, Trivy'
+            env:
+              TERRAFORM_VERSION: $(terraformVersion)
+              TFLINT_VERSION: $(tflintVersion)
+              TRIVY_VERSION: $(trivyVersion)
+              TOOLS_BIN: $(Agent.TempDirectory)/tf-ci-tools/bin
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make fmt-check 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/fmt-check.log"
+            displayName: 'Format check (make fmt-check)'
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make lint 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/tflint.log"
+            displayName: 'TFLint (make lint)'
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make security 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/trivy.log"
+            displayName: 'Trivy IaC/secret/vuln scan (make security)'
+
+          - task: AzureCLI@2
+            displayName: 'init/validate/plan + destructive guard (plan-only WIF)'
+            inputs:
+              azureSubscription: $(planServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              # Exposes servicePrincipalId / idToken / tenantId from a fresh OIDC request.
+              addSpnToEnvironment: true
+              # Terraform emits progress on stderr; do not treat that as failure.
+              failOnStandardError: false
+              inlineScript: |
+                set -euo pipefail
+
+                # The binary plan is created by `terraform -chdir=<workingDir>
+                # plan -out=terraform.tfplan`, so it lives on disk at
+                # <workingDir>/terraform.tfplan but MUST be referenced by its
+                # -chdir-relative name (terraform.tfplan) by any later
+                # `terraform -chdir=<workingDir>` command. Define it once.
+                PLAN_FILE="terraform.tfplan"
+
+                # 1) Reuse the CI plan script: init/validate/plan -> redacted
+                #    plan.txt + logs into the staging dir; binary plan stays in
+                #    the workspace at <workingDir>/${PLAN_FILE}; it also
+                #    greps every staged file for the OIDC token.
+                scripts/ci/terraform-plan.sh "$(terraformWorkingDirectory)" "$(backendConfig)"
+
+                # Workspace-root path, for filesystem existence check + promotion.
+                BINARY_SRC="$(terraformWorkingDirectory)/${PLAN_FILE}"
+                [[ -f "${BINARY_SRC}" ]] || { echo "ERROR: binary plan not produced" >&2; exit 1; }
+
+                # 2) Lightweight destructive-change guard on structured JSON.
+                #    (No Azure/state access; decodes the plan file offline.)
+                #    It runs `terraform -chdir=<workingDir> show`, so pass the
+                #    -chdir-relative plan name, NOT the workspace-root path.
+                scripts/ci/check-destructive-plan.sh "$(terraformWorkingDirectory)" "${PLAN_FILE}"
+
+                # 3) Promote the binary plan to a staging dir OUTSIDE the
+                #    published human-readable artifact, for the apply stage.
+                mkdir -p "$(binaryPlanStagingDir)"
+                cp "${BINARY_SRC}" "$(binaryPlanStagingDir)/${PLAN_FILE}"
+
+                # 4) Defence in depth: the OIDC token must not have leaked into
+                #    the promoted binary plan.
+                if grep -qF -- "${idToken}" "$(binaryPlanStagingDir)/${PLAN_FILE}"; then
+                  rm -rf "$(binaryPlanStagingDir)"
+                  echo "ERROR: OIDC token detected in binary plan — promotion aborted" >&2
+                  exit 1
+                fi
+            # Bootstrap variables with no default, supplied via TF_VAR_* so the
+            # git-ignored bootstrap.auto.tfvars is not required on the agent.
+            # subscription_id is resolved at runtime inside the script.
+            env:
+              TF_VAR_resource_group_name: $(bootstrapResourceGroupName)
+              TF_VAR_storage_account_name: $(bootstrapStorageAccountName)
+
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: terraform-plan
+            displayName: 'Publish sanitized plan.txt + validation logs'
+            # Only the redacted human-readable plan and logs. Never state,
+            # .terraform, tokens, credentials or the binary plan.
+
+          - publish: '$(binaryPlanStagingDir)'
+            artifact: $(binaryPlanArtifact)
+            displayName: 'Promote binary plan (short-lived, apply-only)'
+            # INTERNAL promotion artifact required to apply the EXACT reviewed
+            # plan. Not user-facing; retention follows the pipeline retention
+            # policy — keep it minimal (see docs/runbooks/terraform-cd.md).
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Apply the reviewed plan, gated by the Environment approval.
+  # ---------------------------------------------------------------------------
+  - stage: apply
+    displayName: 'Approve & apply (apply WIF, dev only)'
+    dependsOn: validate_plan
+    condition: succeeded()
+    jobs:
+      - deployment: apply
+        displayName: 'Apply exact reviewed plan to dev'
+        timeoutInMinutes: 30
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        # Binding to the Environment triggers its manual approval check. This is
+        # the single human gate — no redundant ManualValidation task is added.
+        environment: $(environmentName)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  displayName: 'Checkout exact merged main commit'
+
+                - download: current
+                  artifact: $(binaryPlanArtifact)
+                  displayName: 'Download reviewed binary plan'
+
+                - bash: |
+                    set -euo pipefail
+                    scripts/ci/install-tools.sh
+                  displayName: 'Install pinned Terraform, TFLint, Trivy'
+                  env:
+                    TERRAFORM_VERSION: $(terraformVersion)
+                    TFLINT_VERSION: $(tflintVersion)
+                    TRIVY_VERSION: $(trivyVersion)
+                    TOOLS_BIN: $(Agent.TempDirectory)/tf-ci-tools/bin
+
+                - task: AzureCLI@2
+                  displayName: 'terraform apply <reviewed plan> (apply WIF)'
+                  inputs:
+                    azureSubscription: $(applyServiceConnection)
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: scripts/ci/terraform-cd-apply.sh
+                    arguments: '$(terraformWorkingDirectory) $(backendConfig) "$(Pipeline.Workspace)/$(binaryPlanArtifact)/terraform.tfplan"'
+                    addSpnToEnvironment: true
+                    failOnStandardError: false
+                  # No TF_VAR_* here: applying the saved binary plan needs no
+                  # variables — the decided values are baked into the plan file.
+
+                - task: AzureCLI@2
+                  displayName: 'Post-apply drift check (plan WIF, expect exit 0)'
+                  inputs:
+                    # Verify under the PLAN identity — the one that produced the
+                    # reviewed plan. Re-planning under the apply identity would
+                    # report a spurious current_principal_object_id change
+                    # (data.azurerm_client_config.current.object_id differs per
+                    # identity), which is NOT infrastructure drift. This keeps
+                    # apply (apply WIF) and verification (plan WIF) separated.
+                    azureSubscription: $(planServiceConnection)
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: scripts/ci/terraform-cd-drift-check.sh
+                    arguments: '$(terraformWorkingDirectory) $(backendConfig)'
+                    addSpnToEnvironment: true
+                    failOnStandardError: false
+                  # The drift check is a fresh plan, so it needs the root inputs.
+                  env:
+                    TF_VAR_resource_group_name: $(bootstrapResourceGroupName)
+                    TF_VAR_storage_account_name: $(bootstrapStorageAccountName)
+# PR validation test

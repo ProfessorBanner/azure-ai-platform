@@ -1,0 +1,172 @@
+# platform-engineering-assistant CI — product-local quality gates and a
+# deterministic, offline evaluation.
+#
+# NO AZURE, NO MODEL CALL, NO COST.
+#
+# Every step below runs with no service connection, no credential and no
+# network access to a metered endpoint. That is not a convenience: a PR
+# validation pipeline that called a model would put an unbounded, attacker-
+# influenceable spend on the path of every pushed branch, and would make the
+# suite's result depend on the availability of a capacity-1 sandbox deployment.
+#
+# TWO offline evaluations run here, and they prove different things.
+#
+# The GENERATION evaluation uses the product's deterministic provider and proves
+# the answering PIPELINE — schema validity, citation containment, prohibited
+# content and provider failures — over the real corpus and the real sixteen-case
+# dataset. It deliberately does NOT prove answer quality: a stub cannot, and the
+# evaluation policy marks those gates live-only for exactly that reason.
+#
+# The AGENT evaluation injects each case's scripted proposal in place of a model
+# and proves the CONTROLS: that a hostile or absurd proposal cannot cause an
+# unauthorised action, an unapproved state change, a malformed audit trail or an
+# iteration-limit breach. Those gates are the ones worth running on every pushed
+# branch, and they are the ones a stub can exercise honestly.
+#
+# LIVE evaluation stays a manual, human-invoked command. See the product README.
+#
+# trigger/pr are none by design, matching the other product pipelines here. The
+# intended entry point is an Azure Repos build-validation branch policy, which
+# decides WHICH changes must run this; encoding it here as well would split that
+# decision across two places.
+#
+# This pipeline is NOT registered in Azure DevOps by this change. Registration
+# is a manual, human action outside this repository.
+trigger: none
+pr: none
+
+name: platform-engineering-assistant-ci-$(Date:yyyyMMdd)$(Rev:.r)
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  productDir: products/platform-engineering-assistant
+  uvVersion: "0.12.0"
+  reportDir: $(Build.ArtifactStagingDirectory)/evaluation
+  agentReportDir: $(Build.ArtifactStagingDirectory)/agent-evaluation
+
+steps:
+  - checkout: self
+    clean: true
+
+  - bash: |
+      set -euo pipefail
+
+      # Pinned installer URL, not the unversioned "latest" script: the toolchain
+      # that resolves a locked dependency set must itself be reproducible.
+      curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+
+      echo "##vso[task.prependpath]$HOME/.local/bin"
+
+      "$HOME/.local/bin/uv" --version
+    displayName: Install uv (pinned)
+    env:
+      UV_VERSION: $(uvVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      # --frozen: fail rather than silently re-resolve. A dependency that drifted
+      # between the lock file and the installed set would make every result below
+      # a measurement of something other than the reviewed code.
+      uv sync --frozen
+    displayName: Install Product Dependencies (locked)
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run ruff format --check .
+      uv run ruff check .
+    displayName: Format and Lint
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run mypy src tests
+    displayName: Type Check (strict)
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      # No Azure credential is available to this job, and the suite's own
+      # conftest strips every credential and endpoint variable regardless. A test
+      # that reached the network would fail here rather than succeed quietly.
+      uv run pytest tests -q
+    displayName: Unit Tests
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      # The deterministic offline evaluation. Exit codes are meaningful and are
+      # allowed to fail the build:
+      #   0 pass, 1 a gate failed, 2 the run was incomplete, 3 misconfiguration.
+      # Incomplete fails the build too: "we did not measure this" must not be
+      # indistinguishable from success.
+      uv run python -m platform_engineering_assistant.evaluation.generation_cli run \
+        --mode fake \
+        --output "$REPORT_DIR"
+    displayName: Deterministic Offline Evaluation (no Azure, no model call)
+    workingDirectory: $(productDir)
+    env:
+      REPORT_DIR: $(reportDir)
+
+  - bash: |
+      set -euo pipefail
+
+      # Surfaced in the build log so a reviewer sees the verdict without
+      # downloading the artefact. The Markdown summary contains identifiers,
+      # versions, hashes and rates — never a question, an answer or evidence.
+      cat "$REPORT_DIR/evaluation-report.md"
+    displayName: Show Evaluation Summary
+    workingDirectory: $(productDir)
+    condition: always()
+    env:
+      REPORT_DIR: $(reportDir)
+
+  - publish: $(reportDir)
+    artifact: evaluation-report
+    displayName: Publish Evaluation Report
+    condition: always()
+
+  - bash: |
+      set -euo pipefail
+
+      # The deterministic offline AGENT evaluation (Phase 18.6). Same exit-code
+      # contract as above, and the same reason for failing the build on an
+      # incomplete run.
+      #
+      # In fake mode each case's SCRIPTED PROPOSAL is injected in place of a
+      # model, which is what lets this step ask the question that matters on
+      # every pushed branch: if the model were fully compromised and proposed
+      # this, would the application still refuse to act? The control gates —
+      # unauthorised executions, approval compliance, policy compliance,
+      # trajectory correctness, the iteration ceiling — are all evaluated here.
+      # The model-side gates are live-only and are listed in the report as
+      # explicitly not assessed.
+      uv run python -m platform_engineering_assistant.evaluation.agent_cli run \
+        --mode fake \
+        --output "$AGENT_REPORT_DIR"
+    displayName: Deterministic Offline Agent Evaluation (no Azure, no model call)
+    workingDirectory: $(productDir)
+    env:
+      AGENT_REPORT_DIR: $(agentReportDir)
+
+  - bash: |
+      set -euo pipefail
+
+      cat "$AGENT_REPORT_DIR/agent-evaluation-report.md"
+    displayName: Show Agent Evaluation Summary
+    workingDirectory: $(productDir)
+    condition: always()
+    env:
+      AGENT_REPORT_DIR: $(agentReportDir)
+
+  - publish: $(agentReportDir)
+    artifact: agent-evaluation-report
+    displayName: Publish Agent Evaluation Report
+    condition: always()

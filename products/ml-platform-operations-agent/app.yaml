@@ -1,0 +1,50 @@
+# Databricks App runtime configuration.
+#
+# WHY BOTH THIS AND databricks.yml
+# --------------------------------
+# app.yaml is what the Apps RUNTIME reads: the start command and environment.
+# databricks.yml is what the BUNDLE reads to create and configure the resource.
+# A UI deployment uses this file; a bundle deployment uses that one. Providing
+# only one is a documented cause of silent deployment failure.
+#
+# NO SECRETS AND NO TOKENS.
+# The App authenticates with its own injected identity — the SDK picks it up
+# with no profile and no credential of ours. Nothing here is a secret, and
+# nothing here needs to be.
+
+command:
+  - python
+  - -m
+  - ml_platform_operations_agent.app.server
+
+env:
+  # THE PACKAGE LIVES UNDER src/, SO src/ MUST BE ON THE PATH.
+  #
+  # The App runs `python -m ml_platform_operations_agent.app.server` from the
+  # deployed source root, where the package is at `src/ml_platform_operations_agent`.
+  # Without this the process starts and dies immediately with
+  # `No module named 'ml_platform_operations_agent'` — the same src-layout trap
+  # that broke the Phase 19.1e container, in a different disguise.
+  #
+  # PYTHONPATH rather than installing the package: Apps installs only from
+  # requirements.txt, and an editable install of the local tree is exactly the
+  # relocation-fragile construct that caused the 19.1e failure.
+  - name: PYTHONPATH
+    value: "src"
+
+  # The catalog whose evidence this deployment may read. `dev` only: the
+  # governed-catalog check in config.py rejects anything else anyway, and
+  # naming it here keeps the deployment's scope visible in review.
+  - name: ML_PLATFORM_CATALOG
+    value: "dev"
+
+  # The approved runbooks are repository-resident (19.2a found no UC volume),
+  # so the App serves them from its own deployed source tree.
+  - name: ML_PLATFORM_REPO_ROOT
+    value: "."
+
+  # Tracing is OFF by default. The App emits no MLflow trace unless this is
+  # deliberately changed, so a deployment cannot start writing to an experiment
+  # nobody approved.
+  - name: ML_PLATFORM_AGENT_TRACING
+    value: "disabled"

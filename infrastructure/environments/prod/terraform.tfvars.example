@@ -1,0 +1,29 @@
+# Example variables for the prod platform root.
+# Copy to terraform.tfvars (git-ignored) for local plans, or supply via TF_VAR_*
+# in CI. No secrets belong in this file — only non-sensitive identifiers.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "uksouth"
+environment         = "prod"
+resource_group_name = "rg-aiplatform-prod"
+
+# Storage account and Key Vault names are GLOBALLY unique — confirm availability
+# (and add a suffix if taken) before applying.
+storage_account_name = "stexampleproddata"
+# Logical name kv-aiplatform-prod is not globally available; use a stable
+# platform-suffixed physical name (<= 24 chars).
+key_vault_name       = "kv-aiplatform-prod000000"
+
+log_analytics_workspace_name = "log-aiplatform-prod"
+log_analytics_retention_days = 30
+log_analytics_daily_quota_gb = 1
+
+storage_soft_delete_retention_days = 7
+
+databricks_workspace_name        = "dbw-aiplatform-prod"
+databricks_access_connector_name = "ac-aiplatform-databricks-prod"
+
+# Platform mode. The COMMITTED default in variables.tf is the source of truth
+# (CI/CD does not pass this value); set it here only to preview the other mode
+# locally. See docs/runbooks/platform-idle-mode.md.
+idle_mode = false

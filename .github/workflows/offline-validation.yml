@@ -1,0 +1,67 @@
+# Offline validation for the portfolio edition.
+#
+# Everything here runs without Azure credentials, without deployments and
+# without calling any paid model endpoint. It exists so a reviewer can see the
+# repository's own quality gates execute on GitHub: formatting, linting,
+# Terraform validation with the backend disabled, the shell-level CI gate
+# tests and the fast unit suites. The Azure DevOps YAML under
+# azure-pipelines/ is the real delivery system and is NOT executed here.
+name: offline-validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    name: Terraform fmt + validate (backend disabled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+      - name: terraform validate every root and module (no backend, no cloud access)
+        run: make validate
+
+  python-and-gates:
+    name: Ruff, unit tests, CI gate tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Ruff format and lint (repository-wide)
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+      - name: Root unit tests (hello-databricks)
+        run: uv run pytest -q
+      - name: Destructive-plan guard and promotion-gate contract tests
+        run: |
+          tests/ci/test-check-destructive-plan.sh
+          tests/ci/test-verify-promotion.sh
+      - name: Product unit tests (offline suites)
+        run: |
+          set -euo pipefail
+          for project in \
+            products/ml-lifecycle-demo \
+            products/engineering-test-platform \
+            products/platform-engineering-assistant; do
+            echo "==> ${project}"
+            (cd "${project}" && uv sync --quiet && uv run --quiet pytest -q)
+          done

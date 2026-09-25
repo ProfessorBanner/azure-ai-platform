@@ -1,0 +1,44 @@
+# Default values for engineering-test-platform.
+
+replicaCount: 2
+
+image:
+  repository: engineering-test-platform
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Surfaced in the /predict response, so a rollout or rollback is observable from
+# the application's own output rather than only from cluster state.
+modelVersion: engineering-surrogate-v1
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+probes:
+  # Startup gates the other two: until it succeeds, readiness and liveness are
+  # not evaluated, so a slow start cannot be mistaken for a crash loop.
+  startup:
+    initialDelaySeconds: 0
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+  readiness:
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  liveness:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3

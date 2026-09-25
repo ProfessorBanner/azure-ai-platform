@@ -1,0 +1,28 @@
+{
+  "$comment": [
+    "Server-owned retrieval configuration. Versioned in the repository on",
+    "purpose: these values decide which evidence an answer may rest on, so",
+    "changing them is a reviewable diff rather than a runtime flag. No client",
+    "may override any of them.",
+    "Retrieval itself is implemented in Phase 17.1b; this file is the contract",
+    "it will load, and is validated in 17.1a so the shape cannot drift.",
+    "title_weight and heading_weight scale field-aware matching against the",
+    "document title and heading path. Zero reproduces pure body BM25 exactly;",
+    "Set by the published 17.1b calibration grid: heading_weight 0.25 is the",
+    "smallest non-zero combination reaching recall@5 >= 85% without reducing",
+    "recall@1 or recall@3. title_weight stays 0.0 because no title weighting",
+    "improved on it. These weights are FITTED to a 17-question calibration",
+    "set and are not evidence of generalisation.",
+    "minimum_score is a NO-SIGNAL FLOOR only. Measurement showed BM25 scores",
+    "cannot separate in-scope from out-of-scope questions, so genuine",
+    "insufficient-evidence refusal belongs to generation in Phase 17.1c."
+  ],
+  "version": "retrieval_v1",
+  "top_k": 6,
+  "minimum_score": 0.5,
+  "bm25_k1": 1.2,
+  "bm25_b": 0.75,
+  "chunk_budget_chars": 1200,
+  "title_weight": 0.0,
+  "heading_weight": 0.25
+}

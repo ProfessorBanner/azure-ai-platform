@@ -1,0 +1,58 @@
+# {{.project_name}}
+
+A governed ML/AI product on the Azure AI Platform. It is deployed through the
+platform's promotion chain — **DEV → STG → PROD**, same source and same commit
+SHA in every environment — and production deployment stays behind the Azure
+DevOps Environment approval.
+
+The contract this product is held to is
+[`docs/platform/product-contract.md`](../../docs/platform/product-contract.md).
+Read it before changing ownership boundaries, adding infrastructure, or altering
+how environment values reach the code.
+
+## Ownership
+
+| | |
+|---|---|
+| **Owner / team** | _TODO: accountable team_ |
+| **Contact** | _TODO: reachable channel_ |
+| **Monitoring owner** | _TODO: who responds when a run fails_ |
+| **Unity Catalog schema** | `{{.schema_name}}` in the `dev`, `stg` and `prod` catalogs |
+
+## What it does
+
+_TODO: one paragraph — the workload, its inputs, its outputs._
+
+## Layout
+
+```text
+{{.project_name}}/
+├── databricks.yml      # Bundle: variables and one target per environment
+├── resources/          # Job definitions
+├── src/                # Product source, executed by the job
+├── tests/unit/         # Tests that need no credentials and no compute
+├── pyproject.toml
+└── README.md
+```
+
+## Environment values
+
+Workspace host, catalog, compute policy and run-as identity are environment-owned
+and injected per Bundle target. They are never hard-coded in `src/`: the job
+passes `CATALOG` and `SCHEMA` to the workload as cluster environment variables.
+
+## Validating a change
+
+Cheapest sufficient check first — see
+[`docs/platform/engineering-workflow.md`](../../docs/platform/engineering-workflow.md)
+for the proof levels.
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+databricks bundle validate -t dev
+```
+
+Deployment happens through the platform pipelines, not from a workstation.

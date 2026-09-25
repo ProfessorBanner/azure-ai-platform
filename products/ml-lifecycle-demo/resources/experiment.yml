@@ -1,0 +1,17 @@
+# The MLflow experiment, as a governed Bundle resource.
+#
+# Declared here rather than created from src/ so that tracking has the same
+# lifecycle as the job that writes to it: deployed by the pipeline, one per
+# environment, destroyed with the bundle. Source code that calls
+# mlflow.set_experiment() with a name it invents produces experiments nobody
+# provisioned and nobody can clean up — the experiment ID is passed into the
+# training task instead (see resources/job.yml).
+#
+# The experiment lives under the Bundle's own workspace root, so DEV, STG and
+# PROD each get a distinct experiment under a distinct root and their runs and
+# metrics never mix.
+
+resources:
+  experiments:
+    ml_lifecycle_experiment:
+      name: ${workspace.root_path}/ml-lifecycle-demo-${bundle.target}

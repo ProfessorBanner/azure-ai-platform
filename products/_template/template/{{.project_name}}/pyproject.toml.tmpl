@@ -1,0 +1,38 @@
+# Product-local Python configuration for {{.project_name}}.
+#
+# Mirrors the repository's quality conventions (Ruff for formatting and linting,
+# mypy in strict mode, pytest) so a product is checked the same way the platform
+# is. No runtime dependencies are declared: the Databricks Runtime supplies
+# PySpark, and product dependencies should be added deliberately, with a reason.
+
+[project]
+name = "{{.project_name}}"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

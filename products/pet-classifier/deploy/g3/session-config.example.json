@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "region": "uksouth",
+  "system_node_vm_size": "Standard_D4als_v6",
+  "system_node_count": 1,
+  "gpu_node_pool_enabled": true,
+  "gpu_node_vm_size": "Standard_NC4as_T4_v3",
+  "gpu_node_count": 1,
+  "os_disk_size_gb": 64,
+  "kubernetes_version": "1.35.7",
+  "note": "gpu_node_pool_enabled is true here so the estimate covers a real GPU session; the initial Terraform deployment stage keeps the pool disabled."
+}

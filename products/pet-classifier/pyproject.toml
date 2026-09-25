@@ -1,0 +1,77 @@
+# Product-local Python configuration for pet-classifier.
+#
+# Mirrors the repository's quality conventions (Ruff for formatting and linting,
+# mypy in strict mode, pytest) so a product is checked the same way the platform
+# is.
+#
+# Python version: the phase brief asked for 3.11 "subject to repository/platform
+# compatibility". Every other product in this repository, the root pyproject and
+# the shared Ruff/mypy configuration target 3.12, and torch/torchvision publish
+# 3.12 wheels, so this product targets 3.12 to stay on the platform standard.
+#
+# Runtime dependency versions are declared as ranges here and pinned exactly in
+# uv.lock. The lockfile is the pin; its SHA-256 is recorded in every model
+# package so a package can be traced back to the exact environment that built it.
+#
+# G1 is local and CPU-only: no Azure, no Databricks, no CUDA extras.
+#
+# Unlike the Databricks products, this one is installed into its environment as
+# a package (editable, via hatchling) so the documented entry points
+# ``python -m pet_classifier.data`` / ``python -m pet_classifier.train`` and the
+# ``pet_classifier.api:app`` uvicorn target work without PYTHONPATH tricks.
+
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pet-classifier"
+version = "0.1.0"
+description = "Local-first, GPU-ready pet breed image classifier (G1: local CPU baseline)."
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+  "torch>=2.6,<3",
+  "torchvision>=0.21,<1",
+  "scikit-learn>=1.5,<2",
+  "mlflow>=3,<4",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pydantic>=2.8,<3",
+  "jinja2>=3.1,<4",
+  "python-multipart>=0.0.9,<1",
+  "pillow>=10.4,<12",
+  "numpy>=1.26,<3",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+  # Test-only: the API tests drive FastAPI through Starlette's TestClient.
+  "httpx>=0.27,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pet_classifier"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# torchvision and mlflow ship incomplete or absent type information.
+ignore_missing_imports = true

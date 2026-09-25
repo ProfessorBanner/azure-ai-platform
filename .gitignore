@@ -179,3 +179,62 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# --- Repository-specific rules (Terraform, Databricks, local tooling) ---
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+secrets.*
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Terraform variable files may contain secrets
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Databricks
+.databricks/
+bundle.tfstate
+bundle.tfstate.backup
+
+# Local MLflow tracking store created by running ml-lifecycle-demo off-platform.
+# Named exactly rather than as `*.db` or `mlflow.db`: this is the one file known
+# to be generated here, and a broad pattern would silently swallow a future
+# database someone intended to track.
+products/ml-lifecycle-demo/mlflow.db
+
+# Claude local settings
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+.temp/
+
+# Reusable Terraform modules are not deployment roots
+infrastructure/modules/**/.terraform.lock.hcl
+
+# Evaluation reports are run OUTPUT, regenerated on every run.
+artifacts/
+
+# Local portfolio export notes and identifier mappings (never committed)
+*.portfolio-local/

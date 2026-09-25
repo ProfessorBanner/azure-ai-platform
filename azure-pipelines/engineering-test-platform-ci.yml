@@ -1,0 +1,234 @@
+# engineering-test-platform CI — product-local quality, container and chart gates.
+#
+# This pipeline is deliberately self-contained: it touches no Databricks
+# workspace, no Azure subscription, no Terraform state and no Kubernetes cluster,
+# and it uses no service connection, secret, variable group or Environment. It
+# needs no cloud identity because it proves only what can be proven on the agent:
+# the product's tests pass, its image builds and serves, and its chart renders.
+#
+# trigger/pr are none by design. The only intended entry point is an Azure Repos
+# build-validation branch policy, which decides WHICH changes must run this;
+# encoding that here as well would split the decision across two places.
+trigger: none
+pr: none
+
+name: engineering-test-platform-ci-$(Date:yyyyMMdd)$(Rev:.r)
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  productDir: products/engineering-test-platform
+  imageName: engineering-test-platform
+  imageTag: ci-$(Build.BuildId)
+  uvVersion: "0.12.0"
+  helmVersion: "4.2.4"
+
+steps:
+  - checkout: self
+    clean: true
+
+  # --- Python quality gates -------------------------------------------------
+
+  - bash: |
+      set -euo pipefail
+
+      # Pinned installer URL, not the unversioned "latest" script: the toolchain
+      # that resolves a locked dependency set must itself be reproducible.
+      curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+
+      echo "##vso[task.prependpath]$HOME/.local/bin"
+
+      "$HOME/.local/bin/uv" --version
+    displayName: Install uv (pinned)
+    env:
+      UV_VERSION: $(uvVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      # --frozen: fail rather than silently re-resolve. If uv.lock disagrees with
+      # pyproject.toml, that is the finding, not something to paper over.
+      uv sync --frozen
+    displayName: Install Product Dependencies
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run ruff format --check src tests
+      uv run ruff check src tests
+    displayName: Lint and Format Check
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run mypy src tests
+    displayName: Type Check (strict)
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run pytest tests -v
+    displayName: Unit and API Tests
+    workingDirectory: $(productDir)
+
+  # --- Container gate -------------------------------------------------------
+
+  - bash: |
+      set -euo pipefail
+
+      docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" "${PRODUCT_DIR}"
+    displayName: Build Container Image
+    env:
+      IMAGE_NAME: $(imageName)
+      IMAGE_TAG: $(imageTag)
+      PRODUCT_DIR: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      echo "Size:"
+      docker images "${IMAGE_NAME}:${IMAGE_TAG}" --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      echo "Config:"
+      docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --format '{{json .Config}}' \
+        | jq '{
+            User,
+            ExposedPorts,
+            Cmd,
+            Healthcheck: .Healthcheck.Test
+          }'
+
+      # The image must not run as root: the chart pins runAsUser 10001, and a
+      # mismatch here would only surface at deploy time.
+      ACTUAL_USER="$(docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" --format '{{.Config.User}}')"
+
+      if [[ "${ACTUAL_USER}" != "10001:10001" ]]; then
+        echo "Expected image user 10001:10001, got '${ACTUAL_USER}'."
+        exit 1
+      fi
+
+      echo "Image inspection passed."
+    displayName: Inspect Container Image
+    env:
+      IMAGE_NAME: $(imageName)
+      IMAGE_TAG: $(imageTag)
+
+  - bash: |
+      set -euo pipefail
+
+      # An ephemeral free port rather than a fixed 8000: hosted agents run other
+      # things, and a port collision would look like a product failure.
+      HOST_PORT="$(
+        python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+      )"
+      echo "Using host port ${HOST_PORT}."
+
+      CID="$(
+        docker run -d \
+          -p "127.0.0.1:${HOST_PORT}:8000" \
+          -e MODEL_VERSION=engineering-surrogate-ci \
+          "${IMAGE_NAME}:${IMAGE_TAG}"
+      )"
+
+      # Remove the container however this step exits, including on assertion
+      # failure, so a red run never leaves the agent dirty.
+      cleanup() {
+        echo "--- container logs ---"
+        docker logs "${CID}" 2>&1 || true
+        docker rm -f "${CID}" >/dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+
+      BASE="http://127.0.0.1:${HOST_PORT}"
+
+      # Bounded wait: readiness is the service's own statement that the model is
+      # loaded, so polling it is the correct start signal.
+      ready=""
+      for _ in $(seq 1 30); do
+        if [[ "$(curl -fsS -o /dev/null -w '%{http_code}' "${BASE}/health/ready" || true)" == "200" ]]; then
+          ready="yes"
+          break
+        fi
+        sleep 1
+      done
+
+      [[ -n "${ready}" ]] || {
+        echo "Container did not become ready within 30s."
+        exit 1
+      }
+
+      LIVE_STATUS="$(curl -fsS "${BASE}/health/live" | jq -r '.status')"
+      [[ "${LIVE_STATUS}" == "alive" ]] ||
+        { echo "Expected /health/live status=alive, got '${LIVE_STATUS}'."; exit 1; }
+
+      READY_STATUS="$(curl -fsS "${BASE}/health/ready" | jq -r '.status')"
+      [[ "${READY_STATUS}" == "ready" ]] ||
+        { echo "Expected /health/ready status=ready, got '${READY_STATUS}'."; exit 1; }
+
+      PREDICTION="$(
+        curl -fsS -X POST "${BASE}/predict" \
+          -H 'content-type: application/json' \
+          -d '{"temperature_c": 85, "pressure_bar": 5.5, "rotational_speed_rpm": 3100}'
+      )"
+      echo "Prediction: ${PREDICTION}"
+
+      QUALITY="$(echo "${PREDICTION}" | jq -r '.predicted_quality')"
+      [[ "${QUALITY}" != "null" ]] ||
+        { echo "Prediction response had no predicted_quality."; exit 1; }
+
+      # MODEL_VERSION is what makes a release observable from the response, so CI
+      # asserts the environment variable actually reaches the output.
+      MODEL_VERSION="$(echo "${PREDICTION}" | jq -r '.model_version')"
+      [[ "${MODEL_VERSION}" == "engineering-surrogate-ci" ]] ||
+        { echo "Expected model_version=engineering-surrogate-ci, got '${MODEL_VERSION}'."; exit 1; }
+
+      curl -fsS "${BASE}/metrics" | grep -q "etp_predictions_total" ||
+        { echo "/metrics did not expose etp_predictions_total."; exit 1; }
+
+      echo "Container smoke test passed."
+    displayName: Container Smoke Test
+    env:
+      IMAGE_NAME: $(imageName)
+      IMAGE_TAG: $(imageTag)
+
+  # --- Helm gates -----------------------------------------------------------
+
+  - bash: |
+      set -euo pipefail
+
+      curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+        -o /tmp/helm.tar.gz
+
+      tar -xzf /tmp/helm.tar.gz -C /tmp
+      sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+
+      helm version --short
+    displayName: Install Helm (pinned)
+    env:
+      HELM_VERSION: $(helmVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      helm lint helm -f helm/values-local.yaml
+    displayName: Helm Lint (local values)
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      echo "==> Rendering with values-local.yaml"
+      helm template etp helm -f helm/values-local.yaml
+
+      # Render the chart defaults too. values-local.yaml overrides only image and
+      # model version, so a break in the default path would otherwise stay hidden
+      # until the first non-local install.
+      echo "==> Rendering with chart defaults"
+      helm template etp helm
+    displayName: Helm Template (local values and defaults)
+    workingDirectory: $(productDir)

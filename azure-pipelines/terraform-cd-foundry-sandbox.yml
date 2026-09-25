@@ -1,0 +1,125 @@
+# Terraform CD — CONTROLLED APPLY for the FOUNDRY CAPABILITY LAB (sandbox).
+#
+# WHY THIS IS A SEPARATE PIPELINE, NOT A STAGE IN terraform-cd-platform.yml
+# -------------------------------------------------------------------------
+# terraform-cd-platform.yml is triggered by every merge to `main` that touches
+# `infrastructure/**`. The Foundry capability provisions a METERED model
+# deployment: a token-billed resource that must never be created, resized or
+# re-created merely because an unrelated change landed on `main`. So this
+# capability gets its own wrapper with:
+#
+#   trigger: none   — no branch trigger at all
+#   pr: none        — no PR trigger
+#
+# The pipeline therefore runs ONLY when a human queues it explicitly. There is
+# no path by which a commit to `main` can apply it.
+#
+# It is not duplicative: it reuses the SAME reviewed template as every platform
+# environment (templates/terraform-cd-stages.yml), inheriting the identical
+# controls — plan under the read-only identity, destructive-change guard,
+# exact-binary-plan promotion, Environment approval, apply of the reviewed plan
+# verbatim, and a post-apply drift check. Only the trigger policy differs.
+#
+# STATE ISOLATION: capabilities/ai-foundry/sandbox.tfstate. This pipeline cannot
+# reach platform/{sandbox,dev,stg,prod}.tfstate, and the platform CD pipeline
+# cannot reach this one.
+#
+# MANUAL PREREQUISITES (Azure DevOps, outside this repository — deliberately NOT
+# done yet, see docs/adr/0006-foundry-capability-lab.md):
+#   - register this pipeline;
+#   - create the Environment `azure-ai-platform-foundry-sandbox` WITH A MANUAL
+#     APPROVAL — the human gate for creating a metered deployment;
+#   - supply `foundryAllowedIpCidrs` at queue time (see below).
+#
+# The apply identity is the existing sandbox apply service connection: the
+# capability lives in rg-aiplatform-sandbox, where that identity already holds
+# Contributor. No new identity and no new role assignment is introduced.
+
+name: terraform-cd-foundry-sandbox-$(Date:yyyyMMdd)$(Rev:.r)
+
+# Manual queue only. A metered inference deployment must never auto-apply.
+trigger: none
+pr: none
+
+parameters:
+  # REQUIRED at queue time. Deliberately has NO default: the Foundry account is
+  # default-deny, so this value IS its perimeter, and there is no safe value this
+  # repository could pre-supply. Azure DevOps requires a parameter without a
+  # default to be provided when the run is queued, so the pipeline cannot start
+  # without a deliberate human decision about who may reach the data plane.
+  #
+  # Format: a JSON array of IPv4 CIDRs, e.g. ["198.18.0.10/32","198.18.0.20/32"].
+  # Typically the operator's workstation egress address and, if notebooks must
+  # call Foundry, the sandbox Databricks NAT egress address.
+  #
+  # RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
+  # are REJECTED by the guard stage below — including the values used in this
+  # repository's own examples — so a copied placeholder can never be applied.
+  - name: foundryAllowedIpCidrs
+    displayName: 'Allowed IPv4 CIDRs for the Foundry data plane (JSON array, required)'
+    type: string
+
+variables:
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: tflintVersion
+    value: '0.53.0'
+  - name: trivyVersion
+    value: '0.69.3'
+  - name: planServiceConnection
+    value: 'sc-azure-terraform-plan'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # Stage 0: input guard. Runs BEFORE any terraform init/plan/apply, on no Azure
+  # credential at all, so a malformed, empty or placeholder allow-list fails the
+  # run before it can touch state or Azure. Every later stage depends on it.
+  # ---------------------------------------------------------------------------
+  - stage: guard_foundry_inputs
+    displayName: 'Guard · validate Foundry IP allow-list'
+    dependsOn: []
+    jobs:
+      - job: validate_inputs
+        displayName: 'Validate queue-time IP allow-list'
+        timeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            clean: true
+            displayName: 'Checkout sources'
+
+          - bash: |
+              set -euo pipefail
+              scripts/ci/check-foundry-ip-allowlist.sh
+            displayName: 'Validate allowed_ip_cidrs (JSON, IPv4 CIDR, non-documentation)'
+            # Passed through the environment, never interpolated into the script
+            # body, so the value is not rendered into the command echo. The guard
+            # itself reports failures by element index and never prints a value.
+            env:
+              FOUNDRY_ALLOWED_IP_CIDRS: ${{ parameters.foundryAllowedIpCidrs }}
+
+  - template: templates/terraform-cd-stages.yml
+    parameters:
+      env: foundry-sandbox
+      terraformVersion: $(terraformVersion)
+      tflintVersion: $(tflintVersion)
+      trivyVersion: $(trivyVersion)
+      terraformWorkingDirectory: 'infrastructure/capabilities/ai-foundry/sandbox'
+      backendConfig: 'backend/capability-ai-foundry-sandbox.hcl'
+      planServiceConnection: $(planServiceConnection)
+      applyServiceConnection: 'sc-azure-terraform-apply-sandbox'
+      environmentName: 'azure-ai-platform-foundry-sandbox'
+      tfResourceGroupName: 'rg-aiplatform-sandbox'
+      tfStorageAccountName: 'stexamplesandboxdata'
+      humanArtifactName: 'terraform-plan-foundry-sandbox-cd'
+      binaryPlanArtifact: 'terraform-plan-binary-foundry-sandbox'
+      binaryPlanStagingDir: '$(Agent.TempDirectory)/binary-plan-foundry-sandbox'
+      # Nothing runs until the input guard passes.
+      dependsOnStages: [ guard_foundry_inputs ]
+      # extraTfVars is a COMPILE-TIME mapping, so the JSON string reaches
+      # Terraform byte-identically and with its exact lower-case variable name.
+      # (A runtime `##vso[task.setvariable]` export would not: Azure DevOps
+      # upper-cases variable names, and TF_VAR_ lookups are case-sensitive.)
+      extraTfVars:
+        TF_VAR_allowed_ip_cidrs: ${{ parameters.foundryAllowedIpCidrs }}

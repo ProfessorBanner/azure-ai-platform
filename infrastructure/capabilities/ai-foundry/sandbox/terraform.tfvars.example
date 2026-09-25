@@ -1,0 +1,47 @@
+# Example variables for the Foundry capability lab (sandbox).
+# Copy to terraform.tfvars (git-ignored) for local plans, or supply via TF_VAR_*.
+# No secrets belong in this file — only non-sensitive identifiers.
+#
+# subscription_id is normally injected at runtime (TF_VAR_subscription_id
+# resolved from the pipeline service connection); set it here only for local use.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "uksouth"
+environment         = "sandbox"
+resource_group_name = "rg-aiplatform-sandbox"
+
+# Existing sandbox Log Analytics workspace (owned by platform/sandbox.tfstate).
+log_analytics_workspace_name = "log-aiplatform-sandbox"
+
+# The custom subdomain is GLOBALLY unique — confirm availability (and add a
+# suffix if taken) before applying.
+foundry_account_name          = "aif-example-sandbox"
+foundry_custom_subdomain_name = "aif-example-sandbox"
+
+foundry_project_name         = "proj-capability-lab"
+foundry_project_display_name = "Foundry Capability Lab"
+
+# Data-plane IP allow-list. The account is default-deny, so ONLY these addresses
+# can call it. Replace the RFC 5737 documentation placeholders below with real
+# values at runtime; do not commit a real address.
+#
+# Typically:
+#   - your workstation's public egress address (changes when your ISP reassigns);
+#   - the sandbox Databricks NAT egress address, if notebooks must call Foundry.
+allowed_ip_cidrs = [
+  "192.0.2.10",   # placeholder: workstation egress address
+  "198.51.100.20" # placeholder: Databricks NAT egress address
+]
+
+# Model deployment. Regional Standard keeps inference in UK South; capacity is in
+# units of 1,000 tokens per minute.
+#
+# Capacity 10 = 10 requests and 10,000 tokens per 60 seconds. Capacity 1 was
+# measured as unusable for evaluation: 1 request per 60 seconds against ~547
+# tokens per call meant a 36-attempt run produced 1 result and 35 rate limits.
+deployment_name        = "gpt-4-1-mini"
+model_name             = "gpt-4.1-mini"
+model_version          = "2025-04-14"
+deployment_sku_name    = "Standard"
+deployment_capacity    = 10
+version_upgrade_option = "NoAutoUpgrade"

@@ -1,0 +1,143 @@
+# ml-lifecycle-demo CI — product-local quality gates and a Bundle validation.
+#
+# Deliberately self-contained and deliberately independent of Terraform. This
+# pipeline touches no Terraform state, runs no plan, and waits for no
+# infrastructure pipeline. Terraform provisions the durable prerequisites (the
+# catalog, the ml_lifecycle_demo schema and its CREATE_MODEL grant); this
+# pipeline proves the product's own source is correct. The two are coupled
+# through the platform contract — a schema that exists with known privileges —
+# not through pipeline completion.
+#
+# It also starts no compute: `bundle validate` resolves and type-checks the
+# Bundle without creating a cluster, a job run or an experiment.
+#
+# trigger/pr are none by design. The intended entry point is an Azure Repos
+# build-validation branch policy, which decides WHICH changes must run this;
+# encoding that here as well would split the decision across two places.
+trigger: none
+pr: none
+
+name: ml-lifecycle-demo-ci-$(Date:yyyyMMdd)$(Rev:.r)
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  productDir: products/ml-lifecycle-demo
+  uvVersion: "0.12.0"
+
+  # Read-only CI identity — the same workload identity the existing Databricks
+  # CI uses. It deploys nothing.
+  DATABRICKS_HOST: "https://adb-1000000000000002.12.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000c0100"
+
+steps:
+  - checkout: self
+    clean: true
+
+  # --- Python quality gates -------------------------------------------------
+
+  - bash: |
+      set -euo pipefail
+
+      # Pinned installer URL, not the unversioned "latest" script: the toolchain
+      # that resolves a locked dependency set must itself be reproducible.
+      curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+
+      echo "##vso[task.prependpath]$HOME/.local/bin"
+
+      "$HOME/.local/bin/uv" --version
+    displayName: Install uv (pinned)
+    env:
+      UV_VERSION: $(uvVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      # --frozen: fail rather than silently re-resolve. The product's uv.lock
+      # pins mlflow==3.15.2 and scikit-learn==1.9.0, the same versions the job
+      # cluster installs, so a drift between the two is a CI failure and not a
+      # surprise at run time.
+      uv sync --frozen
+    displayName: Install Product Dependencies
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run ruff format --check src tests
+      uv run ruff check src tests
+    displayName: Lint and Format Check
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      uv run mypy src tests
+    displayName: Type Check (strict)
+    workingDirectory: $(productDir)
+
+  - bash: |
+      set -euo pipefail
+
+      # Unit tests only: no Databricks workspace, no Azure credential, no Spark
+      # session. Everything they assert is a property of the product's logic.
+      uv run pytest tests -v
+    displayName: Unit Tests
+    workingDirectory: $(productDir)
+
+  # The promotion helper is Bash, so pytest cannot reach it. These tests mock
+  # the Databricks CLI with a stub on PATH: no workspace, no credential, and no
+  # model is promoted. They guard the logic that decides which model version
+  # PROD releases, which is the last place a silent regression should be
+  # possible.
+  #
+  # `set -euo pipefail` plus a direct invocation means a non-zero exit from the
+  # suite fails the step and therefore the build — the suite exits 1 if any
+  # single case fails.
+  - bash: |
+      set -euo pipefail
+
+      ./tests/shell/test-model-promotion.sh
+    displayName: Promotion Helper Shell Tests
+    workingDirectory: $(productDir)
+
+  # --- Bundle gate ----------------------------------------------------------
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(echo "$IDENTITY" | jq -r '.applicationId // .userName // empty')"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected Databricks identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "Databricks CI workload identity verified."
+    displayName: Verify Databricks CI OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+
+      databricks bundle validate -t dev
+    displayName: Validate DEV Bundle
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

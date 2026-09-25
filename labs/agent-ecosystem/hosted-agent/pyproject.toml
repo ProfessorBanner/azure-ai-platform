@@ -1,0 +1,68 @@
+# Phase 19.1e — the deployable Hosted Agent package.
+#
+# DEPENDS ON THE PRODUCT, NOT ON THE FOUNDRY SDK.
+#
+# This is the whole reason the hosted route is packaged separately from
+# `labs/agent-ecosystem/foundry-agent`. That lab needs `azure-ai-projects`,
+# which requires `openai>=3`; the product pins `openai>=1.99,<3`, so the two
+# cannot share a resolution. A HOSTED agent does not need the Foundry SDK at
+# all — Foundry calls IN to it — so this package can take a proper path
+# dependency on the product instead of the source-path bootstrap the other lab
+# is forced into.
+#
+# It is deliberately NOT a member of the root uv workspace, for the same reason:
+# a single workspace resolution cannot hold both openai pins.
+
+[project]
+name = "hosted-agent"
+version = "0.1.0"
+description = "The Phase 18 controlled agent, packaged as a Microsoft Foundry Hosted Agent."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "platform-engineering-assistant",
+  "azure-ai-agentserver-responses",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.27,<1",
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[tool.uv.sources]
+# EDITABLE, deliberately. The product resolves PRODUCT_ROOT from its own
+# __file__ and reads its retrieval config, prompts and corpus manifest from the
+# repository beside it — none of which ship in a wheel. Installed
+# non-editable, it lands in site-packages and cannot find them: `build_service`
+# fails with "Retrieval configuration could not be read".
+#
+# An editable install keeps __file__ inside the repository tree, which is also
+# exactly what the container does (it COPYs the product source and syncs there).
+# Making the product a self-contained distributable is a real piece of work and
+# is recorded in the README as a prerequisite for any hosting route that does
+# not carry the repository.
+platform-engineering-assistant = { path = "../../../products/platform-engineering-assistant", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hosted_agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

@@ -1,0 +1,146 @@
+# Terraform CD — CONTROLLED APPLY for the PLATFORM component, ALL environments.
+#
+# One platform CD architecture (not four pipeline families). It instantiates the
+# shared per-environment template azure-pipelines/templates/terraform-cd-stages.yml
+# once per environment and wires two paths:
+#
+#   Independent sandbox path (NOT part of promotion):
+#     sandbox: plan -> apply -> validate
+#
+#   Governed promotion path (dev -> stg -> prod):
+#     dev:  plan -> apply -> validate
+#             |
+#     stg:  plan -> apply -> validate   (after apply_dev)
+#             |
+#     prod: plan -> approval -> apply -> validate   (after apply_stg)
+#
+# Every environment uses INDEPENDENT state, an INDEPENDENT binary plan, a
+# sanitized plan text, the destructive-change guard, exact-plan apply and a
+# post-apply drift check, with ENVIRONMENT-SPECIFIC artifact names.
+#
+# Identity model (WIF only; no secret/PAT/SAS/storage key ever):
+#   Plan  (shared, read-only): sc-azure-terraform-plan
+#   Apply (per environment):   sc-azure-terraform-apply-sandbox
+#                              sc-azure-terraform-apply-dev
+#                              sc-azure-terraform-apply-stg
+#                              sc-azure-terraform-apply-prod
+# Approvals live on the Azure DevOps Environments (azure-ai-platform-<env>);
+# azure-ai-platform-prod MUST require a manual approval. Creating/authorising the
+# pipeline, the per-env apply service connections and the Environment approvals
+# are manual Azure DevOps steps (see docs/runbooks/terraform-cd.md).
+
+name: terraform-cd-platform-$(Date:yyyyMMdd)$(Rev:.r)
+
+# Trigger ONLY from `main` (post-merge). No PR trigger; changes reach `main` only
+# via reviewed PR + CI build validation.
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+    exclude:
+      - feature/*
+      - fix/*
+  paths:
+    include:
+      - infrastructure/**
+      - backend/platform-sandbox.hcl
+      - backend/platform-dev.hcl
+      - backend/platform-stg.hcl
+      - backend/platform-prod.hcl
+      - azure-pipelines/terraform-cd-platform.yml
+      - azure-pipelines/templates/terraform-cd-stages.yml
+      - scripts/ci/**
+      - Makefile
+
+pr: none
+
+variables:
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: tflintVersion
+    value: '0.53.0'
+  - name: trivyVersion
+    value: '0.69.3'
+  # Plan-only identity: shared across every environment (read + state only).
+  - name: planServiceConnection
+    value: 'sc-azure-terraform-plan'
+
+stages:
+  # --- SANDBOX: independent path, not part of dev -> stg -> prod ---------------
+  - template: templates/terraform-cd-stages.yml
+    parameters:
+      env: sandbox
+      terraformVersion: $(terraformVersion)
+      tflintVersion: $(tflintVersion)
+      trivyVersion: $(trivyVersion)
+      terraformWorkingDirectory: 'infrastructure/environments/sandbox'
+      backendConfig: 'backend/platform-sandbox.hcl'
+      planServiceConnection: $(planServiceConnection)
+      applyServiceConnection: 'sc-azure-terraform-apply-sandbox'
+      environmentName: 'azure-ai-platform-sandbox'
+      tfResourceGroupName: 'rg-aiplatform-sandbox'
+      tfStorageAccountName: 'stexamplesandboxdata'
+      humanArtifactName: 'terraform-plan-sandbox'
+      binaryPlanArtifact: 'terraform-plan-binary-sandbox'
+      binaryPlanStagingDir: '$(Agent.TempDirectory)/binary-plan-sandbox'
+      dependsOnStages: []
+
+  # --- DEV: first governed environment (starts the promotion chain) -----------
+  - template: templates/terraform-cd-stages.yml
+    parameters:
+      env: dev
+      terraformVersion: $(terraformVersion)
+      tflintVersion: $(tflintVersion)
+      trivyVersion: $(trivyVersion)
+      terraformWorkingDirectory: 'infrastructure/environments/dev'
+      backendConfig: 'backend/platform-dev.hcl'
+      planServiceConnection: $(planServiceConnection)
+      applyServiceConnection: 'sc-azure-terraform-apply-dev'
+      environmentName: 'azure-ai-platform-dev'
+      tfResourceGroupName: 'rg-aiplatform-dev'
+      tfStorageAccountName: 'stexampledevdata'
+      humanArtifactName: 'terraform-plan-dev'
+      binaryPlanArtifact: 'terraform-plan-binary-dev'
+      binaryPlanStagingDir: '$(Agent.TempDirectory)/binary-plan-dev'
+      dependsOnStages: []
+
+  # --- STG: promotes only after DEV apply succeeds ----------------------------
+  - template: templates/terraform-cd-stages.yml
+    parameters:
+      env: stg
+      terraformVersion: $(terraformVersion)
+      tflintVersion: $(tflintVersion)
+      trivyVersion: $(trivyVersion)
+      terraformWorkingDirectory: 'infrastructure/environments/stg'
+      backendConfig: 'backend/platform-stg.hcl'
+      planServiceConnection: $(planServiceConnection)
+      applyServiceConnection: 'sc-azure-terraform-apply-stg'
+      environmentName: 'azure-ai-platform-stg'
+      tfResourceGroupName: 'rg-aiplatform-stg'
+      tfStorageAccountName: 'stexamplestgdata'
+      humanArtifactName: 'terraform-plan-stg'
+      binaryPlanArtifact: 'terraform-plan-binary-stg'
+      binaryPlanStagingDir: '$(Agent.TempDirectory)/binary-plan-stg'
+      dependsOnStages:
+        - apply_dev
+
+  # --- PROD: promotes only after STG apply; apply gated by manual approval -----
+  - template: templates/terraform-cd-stages.yml
+    parameters:
+      env: prod
+      terraformVersion: $(terraformVersion)
+      tflintVersion: $(tflintVersion)
+      trivyVersion: $(trivyVersion)
+      terraformWorkingDirectory: 'infrastructure/environments/prod'
+      backendConfig: 'backend/platform-prod.hcl'
+      planServiceConnection: $(planServiceConnection)
+      applyServiceConnection: 'sc-azure-terraform-apply-prod'
+      environmentName: 'azure-ai-platform-prod'
+      tfResourceGroupName: 'rg-aiplatform-prod'
+      tfStorageAccountName: 'stexampleproddata'
+      humanArtifactName: 'terraform-plan-prod'
+      binaryPlanArtifact: 'terraform-plan-binary-prod'
+      binaryPlanStagingDir: '$(Agent.TempDirectory)/binary-plan-prod'
+      dependsOnStages:
+        - apply_stg

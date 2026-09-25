@@ -1,0 +1,108 @@
+{
+  "dataset_id": "locked_validation_v1",
+  "provenance": {
+    "created": "after calibration was complete and the weights were selected",
+    "authoring_rule": "Questions and expected labels were written from the source documents alone. No retrieval was executed against any of these questions before this file was finalised and hashed.",
+    "independence": "NOT statistically independent. The same engineering process that wrote the retriever, the corpus manifest and the calibration set also wrote these questions, so shared vocabulary and shared assumptions are likely. A genuinely independent set would be written by someone who had not seen the implementation.",
+    "intended_use": "A single one-shot check that the selected configuration behaves on questions it was not fitted to. It is NOT a quality claim and NOT evidence of production generalisation.",
+    "reuse_policy": "Run once. Re-running after any change to weights, chunking or scoring invalidates it as a held-out set, because the result would then have informed the change."
+  },
+  "cases": [
+    {
+      "case_id": "VAL-001",
+      "question": "What did the original platform scope decision choose for the number of Azure tenants and subscriptions, and at what level are environments separated?",
+      "expected_doc_ids": ["adr-0001"],
+      "category": "architecture",
+      "evidence": {
+        "path": "docs/adr/0001-platform-scope.md",
+        "section": "Decision",
+        "lines": "19-34",
+        "why": "States the scope decision verbatim: 'one Azure tenant; one Azure subscription initially; resource-group-level environment separation'. No other approved document records the original scoping choice."
+      }
+    },
+    {
+      "case_id": "VAL-002",
+      "question": "Why is the bootstrap Terraform state kept in its own state key instead of being combined with the platform state?",
+      "expected_doc_ids": ["adr-0004"],
+      "category": "terraform-infrastructure",
+      "evidence": {
+        "path": "docs/adr/0004-dev-platform-foundation.md",
+        "section": "Why bootstrap and platform state are separated",
+        "lines": "35-52",
+        "why": "Gives the rationale directly: mixing them would make the component that stores state depend on the component that is stored, and lists the benefits of separation (independent lifecycles and locks, smaller blast radius, ownership boundaries)."
+      }
+    },
+    {
+      "case_id": "VAL-003",
+      "question": "Which three Azure services made up the first platform foundation, and what was the reason for choosing only those?",
+      "expected_doc_ids": ["adr-0004"],
+      "category": "terraform-infrastructure",
+      "evidence": {
+        "path": "docs/adr/0004-dev-platform-foundation.md",
+        "section": "Why the initial platform is only storage, Key Vault and Log Analytics",
+        "lines": "75-88",
+        "why": "Names the three services and justifies each as the minimum durable substrate, noting they are cheap, carry no persistent compute and have no interdependencies."
+      }
+    },
+    {
+      "case_id": "VAL-004",
+      "question": "Is it possible to push a commit straight to the protected branch, and are policy bypass permissions granted to anyone?",
+      "expected_doc_ids": ["runbook-azure-repos-migration"],
+      "category": "azure-devops-delivery",
+      "evidence": {
+        "path": "docs/runbooks/azure-repos-migration.md",
+        "section": "Branch-policy configuration",
+        "lines": "42-53",
+        "why": "States that direct pushes to main are blocked for every contributor and that both bypass-policy permissions are denied for all non-administrator identities, with force-push denied."
+      }
+    },
+    {
+      "case_id": "VAL-005",
+      "question": "What are the levels of proof used to demonstrate a change works, and when is it acceptable to start compute to prove something?",
+      "expected_doc_ids": ["platform-engineering-workflow"],
+      "category": "governance",
+      "evidence": {
+        "path": "docs/platform/engineering-workflow.md",
+        "section": "3. Proof levels",
+        "lines": "43-66",
+        "why": "Defines L0 to L5 and states the governing rule: never use a higher proof level than necessary, and never start compute merely to prove configuration establishable at L0-L4."
+      }
+    },
+    {
+      "case_id": "VAL-006",
+      "question": "When a released model is behaving badly in production, what is the correct way to point production back at an earlier version?",
+      "expected_doc_ids": ["platform-ml-operations-runbook"],
+      "category": "databricks-lifecycle",
+      "evidence": {
+        "path": "docs/platform/ml-operations-runbook.md",
+        "section": "6. Rollback",
+        "lines": "232-248",
+        "why": "Covers exactly this: roll back when a released Champion misbehaves in PROD, pin an exact previous version, and never roll back to an alias because Candidate is mutable."
+      }
+    },
+    {
+      "case_id": "VAL-007",
+      "question": "What stops a deployment pipeline from applying a change that would delete existing infrastructure?",
+      "expected_doc_ids": ["runbook-terraform-cd"],
+      "category": "operational-recovery",
+      "evidence": {
+        "path": "docs/runbooks/terraform-cd.md",
+        "section": "Destructive-change guard (lab guardrail, not a policy engine)",
+        "lines": "124-131",
+        "why": "Describes the guard that decodes the binary plan and blocks deletes before apply, and is the only approved document describing that control."
+      }
+    },
+    {
+      "case_id": "VAL-008",
+      "question": "Which monitoring situations require raising the issue to a human owner rather than handling it automatically?",
+      "expected_doc_ids": ["platform-ml-operations-runbook"],
+      "category": "monitoring",
+      "evidence": {
+        "path": "docs/platform/ml-operations-runbook.md",
+        "section": "8. Ownership and escalation / Escalate when",
+        "lines": "338-348",
+        "why": "Lists the escalation triggers explicitly: two consecutive critical monitor runs, a retrain requested on three consecutive runs, any rollback, any manual alias change in PROD, and repeated prepare_retraining_data failures."
+      }
+    }
+  ]
+}

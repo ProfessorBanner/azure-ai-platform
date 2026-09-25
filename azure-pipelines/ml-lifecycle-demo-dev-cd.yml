@@ -1,0 +1,208 @@
+# ml-lifecycle-demo DEV CD (pipeline: aiplatform-ml-lifecycle-dev-cd).
+#
+# Entry point of the product's governed rollout: main -> DEV -> STG -> PROD, the
+# same source at the same commit in every environment. Merge to main is the human
+# decision that authorises it.
+#
+# INDEPENDENT OF TERRAFORM BY DESIGN. This pipeline does not depend on, wait for,
+# or trigger any Terraform pipeline. Terraform owns the durable prerequisites —
+# the environment catalog, the ml_lifecycle_demo schema, and the least-privilege
+# grants including CREATE_MODEL. This pipeline owns the product resources — the
+# MLflow experiment and the lifecycle job. The coupling between them is the
+# platform contract (a schema that exists, with known privileges), not pipeline
+# completion. If the contract is unmet, the deploy or the run fails loudly here.
+#
+# CODE promotes across environments; MODELS do not. DEV, STG and PROD each train
+# their own model against their own catalog's data and register it in their own
+# catalog. No artefact is copied between environments. What this pipeline
+# promotes onward is the COMMIT — see products/ml-lifecycle-demo/README.md.
+#
+# In DEV, Champion follows Candidate automatically: the metric gate in
+# train_register and the scoring proof in validate_candidate are sufficient
+# authority for a development environment. PROD requires a human.
+#
+# The path filter is scoped to this product and its own pipeline definitions, so
+# a change to hello-databricks, to Terraform, or to the Kubernetes platform does
+# not start an ML rollout.
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - products/ml-lifecycle-demo/**
+      - azure-pipelines/ml-lifecycle-demo-ci.yml
+      - azure-pipelines/ml-lifecycle-demo-dev-cd.yml
+      - azure-pipelines/ml-lifecycle-demo-stg-cd.yml
+      - azure-pipelines/ml-lifecycle-demo-prod-cd.yml
+
+pr: none
+
+name: ml-lifecycle-demo-dev-cd-$(Date:yyyyMMdd)$(Rev:.r)
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  productDir: products/ml-lifecycle-demo
+  modelName: dev.ml_lifecycle_demo.linear_regression_model
+
+  # Existing DEV Databricks OIDC deployment identity. No PAT, no client secret.
+  DATABRICKS_HOST: "https://adb-1000000000000002.12.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0001"
+
+steps:
+  - checkout: self
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(
+        echo "$IDENTITY" |
+        jq -r '.applicationId // .userName // .emails[0].value // empty'
+      )"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected deployment identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "Databricks DEV deployment identity verified."
+    displayName: Verify DEV CD OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # Platform idle-mode gate: reads the committed idle_mode default for dev
+  # (infrastructure/environments/dev/platform_mode.tf) and fails closed when the
+  # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+  # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+  - bash: |
+      set -euo pipefail
+      scripts/ci/check-platform-mode.sh dev
+    displayName: 'Platform mode gate (dev must be ACTIVE)'
+
+  - bash: |
+      set -euo pipefail
+      databricks bundle validate -t dev
+    displayName: Validate DEV Bundle
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      databricks bundle plan -t dev
+    displayName: Plan DEV Bundle
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      databricks bundle deploy -t dev
+    displayName: Deploy DEV Bundle
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # prepare_data -> train_register -> validate_candidate. The evaluation
+  # threshold is enforced inside train_register, so a model that fails it fails
+  # this step and the rollout stops in DEV. This job registers a Candidate and
+  # proves it scores; it does not touch Champion.
+  - bash: |
+      set -euo pipefail
+      databricks bundle run -t dev ml_candidate
+    displayName: Run DEV Candidate Job
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # WORKING DIRECTORY IS LOAD-BEARING from here on. The Databricks CLI
+  # auto-discovers databricks.yml when its cwd is inside the Bundle and then
+  # takes the host from that Bundle's DEFAULT target — dev. Running a
+  # control-plane call from $(productDir) therefore pairs this environment's
+  # service-principal client ID with the DEV workspace host, and the failure
+  # surfaces as a missing alias rather than as an auth error. Helper and table
+  # commands run from $(Build.SourcesDirectory), where DATABRICKS_HOST is
+  # authoritative; `databricks bundle` commands keep $(productDir), because
+  # those genuinely need the Bundle.
+  # Resolve the mutable alias ONCE, then work only from the number. Everything
+  # below — verification and promotion — is about this exact version.
+  - bash: |
+      set -euo pipefail
+
+      CANDIDATE_VERSION="$(./products/ml-lifecycle-demo/scripts/model-promotion.sh resolve-alias "$MODEL_NAME" Candidate)"
+      echo "DEV Candidate resolved to version ${CANDIDATE_VERSION}"
+
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-version \
+        "$MODEL_NAME" "$CANDIDATE_VERSION" \
+        --environment dev \
+        --git-sha "$BUILD_SOURCEVERSION" \
+        --require-ready
+
+      echo "##vso[task.setvariable variable=candidateVersion]${CANDIDATE_VERSION}"
+    displayName: Resolve and Verify DEV Candidate
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      MODEL_NAME: $(modelName)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh promote "$MODEL_NAME" "$CANDIDATE_VERSION"
+
+      # Both aliases must now name the same version. Champion drifting from the
+      # version just verified would mean something else moved it mid-run.
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Champion "$CANDIDATE_VERSION"
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Candidate "$CANDIDATE_VERSION"
+    displayName: Promote DEV Candidate to Champion
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      MODEL_NAME: $(modelName)
+      CANDIDATE_VERSION: $(candidateVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      # Independent verification against Unity Catalog, not a re-read of the job
+      # output: the governed artefact must exist as a UC object for the rollout
+      # to be considered green.
+      #
+      # candidate_predictions, not predictions: DEV runs no ml_inference job.
+      # validate_candidate already proved the model scores, which is what the
+      # promotion to STG depends on, so a second inference cluster would cost
+      # money to re-prove something already proven.
+      databricks tables get \
+        dev.ml_lifecycle_demo.candidate_predictions \
+        -o json \
+        | jq '{
+            full_name,
+            table_type,
+            data_source_format,
+            storage_location
+          }'
+
+      echo "PASS: DEV candidate scored, verified and promoted to Champion (version $CANDIDATE_VERSION)."
+    displayName: Verify DEV Candidate Predictions Table
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      CANDIDATE_VERSION: $(candidateVersion)
