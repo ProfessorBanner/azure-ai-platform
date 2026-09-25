@@ -1,0 +1,29 @@
+# Example variables for the dev platform root.
+# Copy to terraform.tfvars (git-ignored) for local plans, or supply via TF_VAR_*
+# in CI. No secrets belong in this file — only non-sensitive identifiers.
+#
+# subscription_id is normally injected at runtime (TF_VAR_subscription_id
+# resolved from the pipeline service connection); set it here only for local use.
+
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+location             = "uksouth"
+environment          = "dev"
+resource_group_name  = "rg-aiplatform-dev"
+
+# Storage account and Key Vault names are GLOBALLY unique — confirm availability
+# (and add a suffix if taken) before applying.
+storage_account_name = "stexampledevdata"
+key_vault_name       = "kv-aiplatform-dev"
+
+log_analytics_workspace_name = "log-aiplatform-dev"
+log_analytics_retention_days = 30
+
+# Azure Databricks DEV foundation (Phase 7). Environment-neutral variables; the
+# dev values are the defaults and are shown here for completeness.
+databricks_workspace_name        = "dbw-aiplatform-dev"
+databricks_access_connector_name = "ac-aiplatform-databricks-dev"
+
+# Platform mode. The COMMITTED default in variables.tf is the source of truth
+# (CI/CD does not pass this value); set it here only to preview the other mode
+# locally. See docs/runbooks/platform-idle-mode.md.
+idle_mode = false

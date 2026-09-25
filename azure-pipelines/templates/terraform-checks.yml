@@ -1,0 +1,107 @@
+# Reusable steps for the plan-only Terraform CI pipeline.
+#
+# This template performs the full non-destructive Terraform check sequence:
+#   install pinned tooling -> fmt-check -> tflint -> Trivy -> init/validate/plan
+# and publishes ONLY the human-readable plan and validation logs.
+#
+# It NEVER runs `terraform apply` or `terraform destroy`. The only Azure-
+# authenticated step uses a plan-only workload-identity service connection.
+
+parameters:
+  - name: terraformVersion
+    type: string
+  - name: tflintVersion
+    type: string
+  - name: trivyVersion
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: backendConfig
+    type: string
+  - name: planServiceConnection
+    type: string
+  # Component TF_VAR_* inputs. Defaults reference the including pipeline's own
+  # `tfResourceGroupName` / `tfStorageAccountName` variables so existing callers
+  # (e.g. the bootstrap terraform-ci.yml) keep working unchanged; multi-env
+  # callers pass explicit per-environment values instead.
+  - name: tfResourceGroupName
+    type: string
+    default: '$(tfResourceGroupName)'
+  - name: tfStorageAccountName
+    type: string
+    default: '$(tfStorageAccountName)'
+  # Published plan artifact name. Default preserves the single-component name;
+  # multi-env callers pass a unique per-environment name to avoid collisions.
+  - name: artifactName
+    type: string
+    default: 'terraform-plan'
+  # Additional TF_VAR_* inputs for roots declaring variables beyond the common
+  # pair. Defaults to {}, so existing callers expand byte-identically.
+  - name: extraTfVars
+    type: object
+    default: {}
+
+steps:
+  - checkout: self
+    clean: true
+    displayName: 'Checkout sources'
+
+  - bash: |
+      set -euo pipefail
+      scripts/ci/install-tools.sh
+    displayName: 'Install pinned Terraform, TFLint, Trivy'
+    env:
+      TERRAFORM_VERSION: ${{ parameters.terraformVersion }}
+      TFLINT_VERSION: ${{ parameters.tflintVersion }}
+      TRIVY_VERSION: ${{ parameters.trivyVersion }}
+      TOOLS_BIN: $(Agent.TempDirectory)/tf-ci-tools/bin
+
+  - bash: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+      # `terraform fmt -check -recursive` (plus Python fmt when a project exists).
+      make fmt-check 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/fmt-check.log"
+    displayName: 'Format check (make fmt-check)'
+
+  - bash: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+      # `tflint --recursive` across all Terraform configurations.
+      make lint 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/tflint.log"
+    displayName: 'TFLint (make lint)'
+
+  - bash: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+      # Trivy IaC misconfiguration + secret + vulnerability scan, fail on HIGH/CRITICAL.
+      make security 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/trivy.log"
+    displayName: 'Trivy IaC/secret/vuln scan (make security)'
+
+  - task: AzureCLI@2
+    displayName: 'terraform init/validate/plan (plan-only WIF)'
+    inputs:
+      azureSubscription: ${{ parameters.planServiceConnection }}
+      scriptType: bash
+      scriptLocation: scriptPath
+      scriptPath: scripts/ci/terraform-plan.sh
+      arguments: '${{ parameters.workingDirectory }} ${{ parameters.backendConfig }}'
+      # Exposes servicePrincipalId / idToken / tenantId from a fresh OIDC request.
+      addSpnToEnvironment: true
+      # Terraform emits progress on stderr; do not treat that as failure.
+      failOnStandardError: false
+    # Component variables with no default, supplied via TF_VAR_* so no
+    # git-ignored *.auto.tfvars is required on the hosted agent. The including
+    # pipeline defines tfResourceGroupName / tfStorageAccountName for its
+    # component. subscription_id is resolved at runtime inside the script.
+    env:
+      TF_VAR_resource_group_name: ${{ parameters.tfResourceGroupName }}
+      TF_VAR_storage_account_name: ${{ parameters.tfStorageAccountName }}
+      ${{ each tfVar in parameters.extraTfVars }}:
+        ${{ tfVar.key }}: ${{ tfVar.value }}
+
+  - publish: '$(Build.ArtifactStagingDirectory)'
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Publish plan.txt + validation logs'
+    # Only $(Build.ArtifactStagingDirectory) is published. The binary plan,
+    # Terraform state, .terraform contents and any credentials are never
+    # written here and are therefore never published.

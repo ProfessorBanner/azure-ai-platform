@@ -1,0 +1,36 @@
+# Example variables for the AKS MLOps CONTROLS root.
+# Copy to terraform.tfvars (git-ignored) for local plans, or supply via TF_VAR_*.
+# No secrets belong in this file — only non-sensitive identifiers. The real
+# subscription id is private account evidence and is never committed.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "uksouth"
+project             = "pet-classifier-aks-mlops"
+owner               = "platform-engineering"
+controls_expiry_utc = "2026-12-31T00:00:00Z"
+
+# First run of the hourly sweep. Azure rejects a start time less than five
+# minutes in the future, so set this just before `terraform apply` (G4).
+sweep_start_time_utc = "2026-10-01T12:00:00Z"
+
+# Report until G4 has proven the report-only job live. Never Execute in G3.
+watchdog_mode = "Report"
+
+# Nothing armed. G4 stage 3 sets this from the ledger reservation:
+# armed_session = { session_id = "s20261001-1200-ab12cd", expiry_utc = "2026-10-01T15:50:00Z" }
+armed_session = null
+
+retained_blob_expiry_days = 60
+
+# Data-plane IP allow-list for the retained storage account (default Deny).
+# RFC 5737 placeholder: replace at runtime with the operator egress address;
+# G4 adds the session cluster outbound IP. Never commit a real address.
+allowed_ip_cidrs = ["192.0.2.10"]
+
+# Optional monthly budget alert: needs a real recipient; none is invented.
+budget_alert = {
+  enabled        = false
+  contact_emails = []
+  start_date     = "2026-10-01T00:00:00Z"
+  end_date       = "2027-09-30T00:00:00Z"
+}

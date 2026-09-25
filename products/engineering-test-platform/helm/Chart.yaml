@@ -1,0 +1,8 @@
+apiVersion: v2
+name: engineering-test-platform
+description: Deterministic engineering surrogate-model inference service.
+type: application
+
+# Chart version tracks the packaging; appVersion tracks the application image.
+version: 0.1.0
+appVersion: "0.1.0"

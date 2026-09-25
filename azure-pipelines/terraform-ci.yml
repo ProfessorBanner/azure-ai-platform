@@ -1,0 +1,70 @@
+# Terraform CI — PLAN ONLY (backlog TFCI-1)
+#
+# Runs the full non-destructive Terraform check sequence (fmt-check, init,
+# validate, tflint, Trivy, plan) and publishes a redacted, human-readable plan
+# plus validation logs. It authenticates to Azure and to Terraform state using
+# the plan-only workload-identity service connection `sc-aiplatform-tf-plan`
+# (user-assigned managed identity + Entra workload identity federation).
+#
+# This pipeline MUST NEVER run `terraform apply` or `terraform destroy`. The
+# plan identity holds only Reader (subscription) + Storage Blob Data Contributor
+# (state container) and cannot mutate infrastructure. Apply is a separate,
+# human-approved CD pipeline (backlog Stage 6).
+#
+# PR validation: pull-request runs are triggered by an Azure Repos *branch
+# policy build validation* on `main`, NOT by a YAML `pr:` trigger — hence
+# `pr: none` below. See docs/runbooks/terraform-ci.md.
+
+name: terraform-ci-$(Date:yyyyMMdd)$(Rev:.r)
+
+# No YAML-driven triggers. This pipeline is invoked ONLY by the required Azure
+# Repos branch-policy Build Validation on `main` for pull requests. Previously a
+# `trigger:` (feature/*, fix/*) plus the Build Validation policy produced two
+# runs per PR update — a batched CI run and a PR automated run. Setting both
+# `trigger` and `pr` to none leaves the branch policy as the single trigger.
+trigger: none
+
+# Do not use the YAML PR trigger; branch-policy build validation invokes this
+# pipeline for pull requests targeting `main`.
+pr: none
+
+variables:
+  # Component TF_VAR_* inputs consumed by templates/terraform-checks.yml.
+  - name: tfResourceGroupName
+    value: 'rg-aiplatform-bootstrap-dev'
+  - name: tfStorageAccountName
+    value: 'stexampletf000000'
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: tflintVersion
+    value: '0.53.0'
+  - name: trivyVersion
+    value: '0.69.3'
+  - name: terraformWorkingDirectory
+    value: 'bootstrap'
+  - name: backendConfig
+    value: 'backend/dev.hcl'
+  - name: planServiceConnection
+    value: 'sc-azure-terraform-plan'
+
+stages:
+  - stage: terraform_ci
+    displayName: 'Terraform CI (plan only)'
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: $(terraformWorkingDirectory)
+              backendConfig: $(backendConfig)
+              planServiceConnection: $(planServiceConnection)

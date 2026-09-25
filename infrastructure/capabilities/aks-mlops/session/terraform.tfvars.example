@@ -1,0 +1,31 @@
+# Example variables for the AKS MLOps SESSION root.
+# Copy to terraform.tfvars (git-ignored), or supply via TF_VAR_*. Values that
+# identify the account (subscription, operator object id) are runtime-only.
+
+subscription_id            = "00000000-0000-0000-0000-000000000000"
+location                   = "uksouth"
+cluster_admin_principal_id = "00000000-0000-0000-0000-000000000000"
+
+# API server allow-list. RFC 5737 placeholder; replace with the operator
+# egress address at runtime. Never commit a real address.
+api_server_authorized_ip_cidrs = ["192.0.2.10"]
+
+# From the ledger reservation; must equal what the controls root armed.
+session_id = "s20261001-1200-ab12cd"
+expiry_utc = "2026-10-01T15:50:00Z"
+
+# From the controls root outputs.
+session_resource_group_name = "rg-aiplatform-aksmlops-session"
+node_resource_group_name    = "rg-aiplatform-aksmlops-session-nodes"
+retained_storage_account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-aiplatform-aksmlops-retained/providers/Microsoft.Storage/storageAccounts/staksmlops00000000"
+
+kubernetes_version  = "1.35.7"
+system_node_vm_size = "Standard_D4als_v6"
+system_node_count   = 1
+os_disk_size_gb     = 64
+
+# Initial deployment stage: no GPU pool. G4 flips this only after the
+# watchdog is live-verified and admission (quota, price evidence, ledger) passes.
+gpu_node_pool_enabled = false
+gpu_node_vm_size      = "Standard_NC4as_T4_v3"
+gpu_node_count        = 1

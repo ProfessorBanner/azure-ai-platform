@@ -1,0 +1,15 @@
+# Direct runtime dependencies of the Databricks App.
+#
+# requirements.txt is COMPILED from this against Python 3.11 — the Apps runtime
+# version, which differs from the 3.12 this project develops on:
+#
+#   uv pip compile app-requirements.in --python-version 3.11 --no-header \
+#     -o requirements.txt
+#
+# Kept as a separate input rather than exported from uv.lock because the lock
+# pins requires-python ==3.12.* and produces wheels the App cannot install.
+mlflow[databricks]>=3.16,<4
+databricks-sdk>=0.135,<1
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+pydantic>=2.9,<3

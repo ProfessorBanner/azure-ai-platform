@@ -1,0 +1,159 @@
+trigger: none
+pr: none
+
+# Same-SHA DEV -> STG promotion.
+#
+# STG has no repository trigger of its own: the only automatic path into this
+# pipeline is completion of the DEV CD pipeline on main. DEV and STG share one
+# Azure Repos repository, so Azure Pipelines' same-repository pipeline-completion
+# semantics check this run out at exactly the commit DEV built. The promotion
+# gate below re-verifies that rather than assuming it.
+resources:
+  pipelines:
+    - pipeline: dev
+      source: aiplatform-dbx-dev-cd
+      trigger:
+        branches:
+          include:
+            - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  DATABRICKS_HOST: "https://adb-1000000000000003.4.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0002"
+
+steps:
+  - checkout: self
+
+  # Fail-closed promotion gate. Runs before anything is installed or deployed,
+  # so a manual, scheduled or off-branch run stops here rather than reaching
+  # STG. The pipeline-resource variables are passed through env: so that an
+  # undefined macro becomes an inert string that fails a comparison, instead of
+  # being evaluated by the shell.
+  - bash: |
+      set -euo pipefail
+
+      echo "Build.Reason:                        ${BUILD_REASON}"
+      echo "Build.SourceBranch:                  ${BUILD_SOURCEBRANCH}"
+      echo "Build.SourceVersion:                 ${BUILD_SOURCEVERSION}"
+      echo "resources.pipeline.dev.sourceBranch: ${DEV_SOURCE_BRANCH}"
+      echo "resources.pipeline.dev.sourceCommit: ${DEV_SOURCE_COMMIT}"
+      echo "resources.pipeline.dev.runID:        ${DEV_RUN_ID}"
+
+      fail() {
+        echo "PROMOTION GATE FAILED: $1"
+        exit 1
+      }
+
+      [[ "${BUILD_REASON}" == "ResourceTrigger" ]] ||
+        fail "STG runs only via DEV CD completion (Build.Reason='${BUILD_REASON}')."
+
+      [[ "${BUILD_SOURCEBRANCH}" == "refs/heads/main" ]] ||
+        fail "STG must build refs/heads/main (got '${BUILD_SOURCEBRANCH}')."
+
+      [[ "${DEV_SOURCE_BRANCH}" == "refs/heads/main" ]] ||
+        fail "Triggering DEV run must originate from refs/heads/main (got '${DEV_SOURCE_BRANCH}')."
+
+      [[ "${BUILD_SOURCEVERSION}" == "${DEV_SOURCE_COMMIT}" ]] ||
+        fail "Commit mismatch: STG '${BUILD_SOURCEVERSION}' != DEV '${DEV_SOURCE_COMMIT}'."
+
+      echo "Promotion gate passed: promoting DEV run ${DEV_RUN_ID} at ${BUILD_SOURCEVERSION}."
+    displayName: Verify DEV -> STG Promotion Identity
+    env:
+      BUILD_REASON: $(Build.Reason)
+      BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+      DEV_SOURCE_BRANCH: $(resources.pipeline.dev.sourceBranch)
+      DEV_SOURCE_COMMIT: $(resources.pipeline.dev.sourceCommit)
+      DEV_RUN_ID: $(resources.pipeline.dev.runID)
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(
+        echo "$IDENTITY" |
+        jq -r '.applicationId // .userName // .emails[0].value // empty'
+      )"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected Databricks identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "STG deployment identity verified."
+    displayName: Verify STG Databricks OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # Platform idle-mode gate: reads the committed idle_mode default for stg
+  # (infrastructure/environments/stg/platform_mode.tf) and fails closed when the
+  # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+  # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+  - bash: |
+      set -euo pipefail
+      scripts/ci/check-platform-mode.sh stg
+    displayName: 'Platform mode gate (stg must be ACTIVE)'
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle validate -t stg
+    displayName: Validate STG Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle plan -t stg
+    displayName: Plan STG Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle deploy -t stg
+    displayName: Deploy STG Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+      databricks bundle run -t stg hello_databricks
+    displayName: Run STG Bundle Job
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+
+      databricks tables get \
+        stg.hello_databricks.bundle_test_output \
+        -o json \
+        | jq '{
+            full_name,
+            table_type,
+            data_source_format,
+            storage_location
+          }'
+    displayName: Verify STG Output Table
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

@@ -1,0 +1,66 @@
+{
+  "$comment": [
+    "Deployment inputs for the Hosted Agent version, held as data so a deploy is",
+    "a reviewable diff rather than a set of remembered flags.",
+    "",
+    "CONSUMED BY foundry_agent_lab.hosted_deploy, which builds a",
+    "HostedAgentDefinition from it. Every field maps to one the installed",
+    "azure-ai-projects 2.5.0 model declares — verified by introspection and",
+    "asserted by tests rather than trusted.",
+    "",
+    "ARCHITECTURE. The image must be linux/amd64. Foundry runs Linux amd64 nodes,",
+    "and an arm64 image built on an Apple Silicon workstation will push happily",
+    "and then fail to start with an exec format error. The build command in the",
+    "README passes --platform for exactly this reason.",
+    "",
+    "NO SECRETS. environment_variables carries endpoints and names only; the",
+    "container authenticates with the managed identity Foundry assigns it, and",
+    "the registry issues no credentials because its admin account is disabled.",
+    "",
+    "RESOURCE TIERS ARE PAIRS. Foundry accepts 0.25/0.5Gi, 0.5/1Gi, 1/2Gi and",
+    "2/4Gi, and REJECTS every other combination - '1' with '4Gi' is not a tier",
+    "even though both values appear in the table. Change cpu and memory",
+    "together; hosted_deploy.RESOURCE_TIERS enforces the pairing.",
+    "",
+    "NO PORT. Foundry reserves PORT and injects it; azure-ai-agentserver-core",
+    "resolves the bind port from it, defaulting to 8088, and binds 0.0.0.0.",
+    "Declaring PORT here would fight the platform for the bind address.",
+    "",
+    "IMMUTABLE IMAGE TAG. The image below is the CORRECTED artefact deployed as",
+    "version 2: it installs at /app so the editable-install .pth files stay",
+    "resolvable, and it carries the approved corpus. It superseded the version 1",
+    "image, which failed every session with 'No module named hosted_agent'.",
+    "",
+    "The tag is treated as immutable - it names one build and is never moved.",
+    "Any behaviour change is a NEW tag and a NEW version, never a re-push over",
+    "this one, because a moved tag makes a deployed version unreproducible.",
+    "Rebuild, run scripts/container_smoke.sh, then update this tag: the smoke",
+    "test is the gate, and version 1 is what shipping without it looks like."
+  ],
+  "agent_name": "phase19-hosted-controlled-agent",
+  "description": "The Phase 18 controlled agent, hosted by Microsoft Foundry.",
+  "cpu": "1",
+  "memory": "2Gi",
+  "container_architecture": "linux/amd64",
+  "protocol_versions": [
+    {
+      "protocol": "responses",
+      "version": "1.0.0"
+    }
+  ],
+  "container_configuration": {
+    "image": "acrexamplesandbox00000000.azurecr.io/phase19-hosted-controlled-agent:phase19-1e-222a28e89da6",
+    "registry_connection_id": null
+  },
+  "environment_variables": {
+    "HOSTED_AGENT_NAME": "phase19-hosted-controlled-agent",
+    "HOSTED_AGENT_MAX_INPUT_CHARS": "4000",
+    "AZURE_OPENAI_ENDPOINT": "https://aif-example-sandbox.openai.azure.com/openai/v1/",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-4-1-mini"
+  },
+  "metadata": {
+    "phase": "19.1e",
+    "control_model": "phase-18-application-owned",
+    "approval_owner": "application"
+  }
+}

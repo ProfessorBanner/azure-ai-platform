@@ -1,0 +1,115 @@
+# Declarative Automation Bundle for the ML Platform Operations Agent App.
+#
+# DEV ONLY. There is deliberately no stg or prod target: this is a bounded
+# proof, and a target that exists is a target somebody can deploy to.
+#
+# NO GRANTS ARE DECLARED HERE YET. The permissions block below grants only
+# management of the app resource itself to the deploying identity. The Unity
+# Catalog privileges the app identity needs are documented in the README and
+# are NOT applied by this bundle — they require a separate, explicitly approved
+# step, because a bundle that silently granted SELECT would make a review of
+# those grants impossible.
+
+bundle:
+  name: ml-platform-operations-agent
+
+variables:
+  catalog:
+    description: Unity Catalog catalog whose evidence the app may read.
+    default: dev
+
+# WHAT GETS UPLOADED.
+#
+# `sync.paths` defaults to ["."], which here would upload a 646 MB `.venv`
+# plus every cache and the whole test suite. `include` names what the App
+# actually needs to run; `exclude` is belt-and-braces for anything a future
+# addition drops into the tree.
+#
+# `../../docs` IS DELIBERATE. The approved runbook lives at the REPOSITORY
+# root (19.2a: no UC volume exists), outside this bundle's directory. Without
+# it the App's runbook tool would return absence on every call and no cause
+# could ever be `supported` — the agent would still be correct, but
+# permanently unable to reach its most useful answer.
+sync:
+  # ONE PATH. Adding a second (e.g. `../../docs`) re-roots the sync to the
+  # common ancestor and the pattern matcher then misbehaves — `bundle validate`
+  # reported `src/**` matching nothing, which would have shipped a tree with no
+  # source in it.
+  paths:
+    - .
+
+  # `exclude` IS THE DENY-LIST. `include` IS NOT AN ALLOW-LIST.
+  #
+  # Learned the hard way on the first deploy: with an `include` list the bundle
+  # uploaded `.venv` (numpy, pyarrow, sklearn), `tests/`, `evaluation/` and
+  # `pyproject.toml` anyway. `sync.include` ADDS to the default set — and worse,
+  # it appears to override the repository `.gitignore` that would otherwise
+  # have excluded `.venv`. It does not restrict anything.
+  #
+  # So the deny-list is the construct that actually governs the upload here,
+  # and it is written explicitly rather than trusted to `.gitignore`, because
+  # the first deploy proved that trust was misplaced.
+  exclude:
+    - .venv/**
+    - .databricks/**
+    - .mypy_cache/**
+    - .pytest_cache/**
+    - .ruff_cache/**
+    - "**/__pycache__/**"
+    - tests/**
+    - evaluation/**
+    - pyproject.toml
+    - app-requirements.in
+    - uv.lock
+    - README.md
+    - mlruns/**
+    - "*.db"
+    - "*.log"
+    - .env
+    - .env.*
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: https://adb-1000000000000002.12.azuredatabricks.net
+
+    resources:
+      apps:
+        ml_platform_operations_agent:
+          # <=26 characters, lowercase and hyphens only.
+          name: phase19-ml-platform-ops
+          description: >-
+            Read-only, evidence-bound diagnosis of ML model degradation over
+            Phase 15 lifecycle telemetry. Performs no state-changing ML
+            operation and calls no language model at runtime.
+          source_code_path: .
+
+          config:
+            command:
+              - python
+              - -m
+              - ml_platform_operations_agent.app.server
+            env:
+              # src-layout: the package is at src/ml_platform_operations_agent.
+              - name: PYTHONPATH
+                value: "src"
+              - name: ML_PLATFORM_CATALOG
+                value: "dev"
+              # The synced tree mirrors the repository layout, so `docs/`
+              # sits beside the product. Resolved at startup and validated by
+              # the runbook adapter's containment check.
+              - name: ML_PLATFORM_REPO_ROOT
+                value: "."
+              - name: ML_PLATFORM_AGENT_TRACING
+                value: "disabled"
+
+          # NO `resources:` BLOCK.
+          #
+          # An app resource declaration is how an App is granted a warehouse, a
+          # serving endpoint or a secret. This app needs none of those:
+          #   - no SQL warehouse  — table EXISTENCE comes from UC metadata, and
+          #                         reading rows is out of scope for this phase;
+          #   - no serving endpoint — the agent calls no model at runtime;
+          #   - no secret         — it authenticates as its own identity.
+          # Declaring an unused resource would grant access nothing needs.

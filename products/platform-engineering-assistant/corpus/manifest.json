@@ -1,0 +1,117 @@
+{
+  "$comment": [
+    "The APPROVED corpus. Every document is listed explicitly; the loader never",
+    "globs the repository. A glob would silently admit any Markdown file a",
+    "future commit happened to add, which is how an unreviewed, wrong or",
+    "sensitive document becomes a cited authority.",
+    "Exclusions are recorded here, with reasons, so an omission reads as a",
+    "decision rather than an oversight."
+  ],
+  "corpus_version": 1,
+  "documents": [
+    {
+      "doc_id": "adr-0001",
+      "path": "docs/adr/0001-platform-scope.md",
+      "title": "ADR 0001: Platform scope",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "adr-0002",
+      "path": "docs/adr/0002-terraform-state-backend.md",
+      "title": "ADR 0002: Terraform state backend",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "adr-0003",
+      "path": "docs/adr/0003-azure-devops-primary-cicd.md",
+      "title": "ADR 0003: Azure DevOps as primary CI/CD",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "adr-0004",
+      "path": "docs/adr/0004-dev-platform-foundation.md",
+      "title": "ADR 0004: DEV platform foundation",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "adr-0005",
+      "path": "docs/adr/0005-four-environment-databricks-foundation.md",
+      "title": "ADR 0005: Four-environment Azure / Databricks foundation",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "adr-0006",
+      "path": "docs/adr/0006-foundry-capability-lab.md",
+      "title": "ADR 0006: Microsoft Foundry capability lab",
+      "authority": "adr"
+    },
+    {
+      "doc_id": "platform-current-state",
+      "path": "docs/platform/current-state.md",
+      "title": "Platform current state",
+      "authority": "current-state"
+    },
+    {
+      "doc_id": "platform-engineering-workflow",
+      "path": "docs/platform/engineering-workflow.md",
+      "title": "Engineering workflow",
+      "authority": "standard"
+    },
+    {
+      "doc_id": "platform-ml-operations-runbook",
+      "path": "docs/platform/ml-operations-runbook.md",
+      "title": "ML operations runbook",
+      "authority": "runbook"
+    },
+    {
+      "doc_id": "platform-naming-standard",
+      "path": "docs/platform/naming-standard.md",
+      "title": "ML/AI platform naming standard",
+      "authority": "standard"
+    },
+    {
+      "doc_id": "platform-product-contract",
+      "path": "docs/platform/product-contract.md",
+      "title": "Product contract",
+      "authority": "standard"
+    },
+    {
+      "doc_id": "runbook-azure-repos-migration",
+      "path": "docs/runbooks/azure-repos-migration.md",
+      "title": "Runbook: Azure Repos migration",
+      "authority": "runbook"
+    },
+    {
+      "doc_id": "runbook-terraform-cd",
+      "path": "docs/runbooks/terraform-cd.md",
+      "title": "Runbook: Terraform CD",
+      "authority": "runbook"
+    },
+    {
+      "doc_id": "runbook-terraform-ci",
+      "path": "docs/runbooks/terraform-ci.md",
+      "title": "Runbook: Terraform CI",
+      "authority": "runbook"
+    },
+    {
+      "doc_id": "runbook-terraform-state-recovery",
+      "path": "docs/runbooks/terraform-state-recovery.md",
+      "title": "Runbook: Terraform state recovery",
+      "authority": "runbook"
+    }
+  ],
+  "excluded": [
+    {
+      "path": "docs/architecture.md",
+      "reason": "Recorded as stale in docs/platform/current-state.md: still describes 'Stage 6: dev Azure platform foundation' and predates the Databricks, networking, Unity Catalog and promotion work. Citing it would produce confident, wrong answers about how the platform is built."
+    },
+    {
+      "path": "README.md",
+      "reason": "Recorded as stale in docs/platform/current-state.md, alongside docs/architecture.md. Prefer current-state.md and the ADRs."
+    },
+    {
+      "path": "docs/implementation-backlog.md",
+      "reason": "Recorded as stale in docs/platform/current-state.md. It is also a backlog of intentions rather than a description of what exists, so it would answer 'how is this built' with plans that were never executed."
+    }
+  ]
+}

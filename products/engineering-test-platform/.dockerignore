@@ -1,0 +1,25 @@
+# Keep the build context to exactly what the image needs: pyproject.toml,
+# uv.lock and src/. Everything below is either irrelevant to the runtime image
+# or actively harmful in it (host virtualenvs, caches, tests).
+
+.venv/
+**/.venv/
+
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.git/
+.gitignore
+
+tests/
+deploy/
+helm/
+
+Dockerfile
+.dockerignore
+README.md

@@ -1,0 +1,21 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} released as {{ .Release.Name }}.
+
+Image:         {{ .Values.image.repository }}:{{ .Values.image.tag }}
+MODEL_VERSION: {{ .Values.modelVersion }}
+Replicas:      {{ .Values.replicaCount }}
+
+The Service is {{ .Values.service.type }}, so reach it with a port-forward:
+
+  kubectl port-forward svc/{{ include "engineering-test-platform.fullname" . }} 8000:{{ .Values.service.port }}
+
+Then:
+
+  curl localhost:8000/health/ready
+  curl localhost:8000/metrics
+  curl -X POST localhost:8000/predict \
+    -H 'content-type: application/json' \
+    -d '{"temperature_c": 85, "pressure_bar": 5.5, "rotational_speed_rpm": 3100}'
+
+Watch a rollout:
+
+  kubectl rollout status deployment/{{ include "engineering-test-platform.fullname" . }}

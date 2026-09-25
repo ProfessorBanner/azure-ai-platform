@@ -1,0 +1,262 @@
+# ml-lifecycle-demo runtime — TWO jobs, split along the approval boundary.
+#
+#   ml_candidate:  prepare_data -> train_register -> validate_candidate
+#   ml_inference:  batch_inference
+#
+# The split is the point. ml_candidate produces and proves a candidate; it never
+# moves Champion. ml_inference scores production with whatever version holds
+# Champion, which in PROD is a version a human approved. Keeping them in one job
+# would mean production inference could only ever run as a side effect of
+# training, and PROD's post-evaluation approval would have nothing left to gate.
+#
+# Each job owns its own shared classic job cluster, sized and constrained by the
+# environment's compute policy. Classic and not serverless: the policy is this
+# product's cost and shape control, and it governs classic clusters.
+#
+# Compute shape, catalog, schema and run-as identity are all environment-owned
+# and injected as Bundle variables. Nothing here is an environment literal.
+
+resources:
+  jobs:
+    ml_candidate:
+      name: ml-lifecycle-demo-candidate-${bundle.target}
+
+      # Candidate is a MUTABLE alias. Two concurrent training runs would race to
+      # set it, and a validation task could then prove a different artefact than
+      # the one its own run registered. One run at a time removes the race; the
+      # tasks additionally resolve the alias once and pin the version number, so
+      # a race could not pass unnoticed even if one occurred.
+      max_concurrent_runs: 1
+
+      run_as:
+        service_principal_name: ${var.run_as_service_principal_name}
+
+      job_clusters:
+        - job_cluster_key: ml_lifecycle_demo
+
+          new_cluster: &ml_cluster
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "Standard_DS3_v2"
+
+            autoscale:
+              min_workers: 1
+              max_workers: 1
+
+            policy_id: ${var.job_compute_policy_id}
+
+            spark_env_vars:
+              CATALOG: ${var.catalog}
+              SCHEMA: ${var.schema}
+
+              # Provenance for the model version the training task registers.
+              # bundle.git.commit resolves to the deployed commit; when the
+              # bundle is deployed from outside a Git checkout it resolves to
+              # empty and the tasks simply omit the tag.
+              BUNDLE_TARGET: ${bundle.target}
+              GIT_SHA: ${bundle.git.commit}
+
+      # Pinned to the exact versions the product is tested against. Declared on
+      # every task because libraries are a task-level declaration: the shared
+      # cluster installs the union once, and stating them per task keeps a task
+      # runnable on its own during debugging.
+      tasks:
+        - task_key: prepare_data
+
+          job_cluster_key: ml_lifecycle_demo
+
+          libraries: &ml_libraries
+            - pypi:
+                package: mlflow==3.15.2
+            - pypi:
+                package: scikit-learn==1.9.0
+
+          spark_python_task:
+            python_file: ../src/prepare_data.py
+
+        - task_key: train_register
+
+          depends_on:
+            - task_key: prepare_data
+
+          job_cluster_key: ml_lifecycle_demo
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/train_register.py
+
+            # The experiment is a deployed resource; the task is told which one
+            # to write to rather than choosing for itself.
+            parameters:
+              - --experiment-id
+              - ${resources.experiments.ml_lifecycle_experiment.id}
+
+        - task_key: validate_candidate
+
+          depends_on:
+            - task_key: train_register
+
+          job_cluster_key: ml_lifecycle_demo
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/validate_candidate.py
+
+    ml_inference:
+      name: ml-lifecycle-demo-inference-${bundle.target}
+
+      # One writer at a time for the predictions table. Two concurrent runs
+      # could interleave an overwrite with a promotion and split one output
+      # table across two model versions.
+      max_concurrent_runs: 1
+
+      run_as:
+        service_principal_name: ${var.run_as_service_principal_name}
+
+      # Its own cluster, governed by the same environment compute policy. It is
+      # a separate cluster because it is a separate job with a separate
+      # lifecycle — in PROD it starts only after the release is approved.
+      job_clusters:
+        - job_cluster_key: ml_lifecycle_demo_inference
+
+          new_cluster: *ml_cluster
+
+      tasks:
+        - task_key: batch_inference
+
+          job_cluster_key: ml_lifecycle_demo_inference
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/batch_inference.py
+
+    # --- Monitoring and controlled retraining --------------------------------
+    #
+    #   monitor -> retraining_required? -[true]-> prepare_retraining_data
+    #                                  |               -> train_register
+    #                                  |                   -> validate_candidate
+    #                                  \-[false]-> (job ends, green)
+    #
+    # The condition task is what makes retraining CONTROLLED rather than
+    # scheduled: the expensive branch runs only when the monitor asked for it,
+    # and the monitor's reasoning is already durable in monitoring_history before
+    # the branch is taken.
+    #
+    # prepare_retraining_data is what makes it RETRAINING rather than refitting.
+    # It joins the batch features to the ground truth that has since arrived and
+    # combines those newly labelled observations with the original training set,
+    # so the new candidate learns from data the current Champion never saw.
+    # Refitting the unchanged training_data would produce a near-identical model
+    # and leave the drift that triggered the retrain unaddressed.
+    #
+    # Retraining reuses the SAME train_register and validate_candidate tasks as
+    # ml_candidate — same source, same metric gate, same provenance tags, same
+    # Candidate alias — differing only in which governed table it fits on. A
+    # retrained model is a candidate like any other and does NOT become Champion;
+    # promotion remains the separate, approved decision.
+    ml_monitor_retrain:
+      name: ml-lifecycle-demo-monitor-${bundle.target}
+
+      # One monitor run at a time. Two concurrent runs could both observe the
+      # same drift and both request a retrain, racing to set Candidate.
+      max_concurrent_runs: 1
+
+      run_as:
+        service_principal_name: ${var.run_as_service_principal_name}
+
+      parameters:
+        # An explicit, audited override for proving the retraining path end to
+        # end without waiting for real drift. It changes only WHETHER retraining
+        # is requested — never how the candidate is trained, validated or
+        # promoted — and the monitor records that it was forced, in
+        # monitoring_history and as an info alert.
+        - name: force_retrain
+          default: "false"
+
+      schedule:
+        # Conservative and boring: 06:00 UTC daily, before the working day and
+        # well after any overnight batch. Deployed to all three environments so
+        # the cron itself is reviewed in code; PAUSED everywhere except PROD.
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+        pause_status: ${var.monitor_schedule_pause_status}
+
+      job_clusters:
+        - job_cluster_key: ml_lifecycle_demo_monitor
+
+          new_cluster: *ml_cluster
+
+      tasks:
+        - task_key: monitor
+
+          job_cluster_key: ml_lifecycle_demo_monitor
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/monitor.py
+
+            parameters:
+              - --force-retrain
+              - "{{job.parameters.force_retrain}}"
+
+        # Branch on the task value the monitor published. Keeping the decision
+        # in the job graph rather than inside monitor.py means the branch is
+        # visible in the Databricks run UI: an operator can see that retraining
+        # was skipped, not just infer it from the absence of a model version.
+        - task_key: retraining_required
+
+          depends_on:
+            - task_key: monitor
+
+          condition_task:
+            op: EQUAL_TO
+            left: "{{tasks.monitor.values.retraining_required}}"
+            right: "true"
+
+        - task_key: prepare_retraining_data
+
+          depends_on:
+            - task_key: retraining_required
+              outcome: "true"
+
+          job_cluster_key: ml_lifecycle_demo_monitor
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/prepare_retraining_data.py
+
+        - task_key: train_register
+
+          depends_on:
+            - task_key: prepare_retraining_data
+
+          job_cluster_key: ml_lifecycle_demo_monitor
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/train_register.py
+
+            parameters:
+              - --experiment-id
+              - ${resources.experiments.ml_lifecycle_experiment.id}
+              # The one difference from ml_candidate: fit on the newly labelled
+              # set. A SHORT name — the catalog and schema come from the target.
+              - --training-table
+              - retraining_data
+
+        - task_key: validate_candidate
+
+          depends_on:
+            - task_key: train_register
+
+          job_cluster_key: ml_lifecycle_demo_monitor
+
+          libraries: *ml_libraries
+
+          spark_python_task:
+            python_file: ../src/validate_candidate.py

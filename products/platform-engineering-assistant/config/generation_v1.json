@@ -1,0 +1,15 @@
+{
+  "$comment": [
+    "Server-owned generation configuration. Like the retrieval configuration,",
+    "no client may override any of it: prompt, model, deployment, context size",
+    "and answer length all decide what the model is allowed to do, so changing",
+    "them is a reviewable diff rather than a request parameter.",
+    "context_budget_chars bounds the evidence block. When the budget is",
+    "exhausted only COMPLETE chunks are included; a chunk is never cut, because",
+    "a fragment reads as complete evidence while being partial."
+  ],
+  "version": "generation_v1",
+  "prompt_file": "answer_v1.md",
+  "context_budget_chars": 12000,
+  "max_answer_chars": 4000
+}

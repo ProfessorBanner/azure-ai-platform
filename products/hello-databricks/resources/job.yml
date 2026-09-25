@@ -1,0 +1,39 @@
+resources:
+  jobs:
+    hello_databricks:
+      name: hello-databricks-${bundle.target}
+
+      job_clusters:
+        - job_cluster_key: hello_databricks
+
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "Standard_DS3_v2"
+
+            autoscale:
+              min_workers: 1
+              max_workers: 1
+
+            policy_id: ${var.job_compute_policy_id}
+
+            spark_env_vars:
+              CATALOG: ${var.catalog}
+              SCHEMA: ${var.schema}
+
+      tasks:
+        - task_key: ensure_fixture
+
+          job_cluster_key: hello_databricks
+
+          spark_python_task:
+            python_file: ../src/ensure_fixture.py
+
+        - task_key: transform
+
+          depends_on:
+            - task_key: ensure_fixture
+
+          job_cluster_key: hello_databricks
+
+          spark_python_task:
+            python_file: ../src/transform.py

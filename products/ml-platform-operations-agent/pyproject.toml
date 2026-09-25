@@ -1,0 +1,90 @@
+# Product-local Python configuration for ml-platform-operations-agent.
+#
+# OFFLINE BY CONSTRUCTION (Phase 19.2b).
+#
+# The dependency list is the enforcement mechanism, not a preference. This
+# package cannot call Databricks, MLflow or a model provider because none of
+# them is installed: `mlflow`, `databricks-sdk`, `databricks-sql-connector`,
+# `databricks-agents`, `langgraph`, `langchain`, `openai-agents` and the MCP
+# libraries are all absent. tests/test_source_hygiene.py asserts that no module
+# imports them, so the 19.2b gate ("no Databricks or LLM calls") is structural
+# rather than merely observed on the day.
+#
+# Live implementations arrive in 19.2c BEHIND the protocols in
+# adapters/protocols.py. That boundary is why they can arrive without rewriting
+# the controlled core.
+#
+# Pydantic alone at runtime, matching platform-engineering-assistant.
+
+[project]
+name = "ml-platform-operations-agent"
+version = "0.1.0"
+description = "Read-only, evidence-bound diagnosis of ML model degradation over Phase 15 lifecycle telemetry."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pydantic>=2.9,<3",
+]
+
+[dependency-groups]
+# LIVE ADAPTERS ONLY (Phase 19.2c).
+#
+# These are a DEV-GROUP dependency, not a runtime one, and that placement is
+# the point. The controlled core in `src/` imports neither of them; only
+# `adapters/databricks.py` does, and only behind the protocols. Keeping them
+# out of `project.dependencies` means the core stays installable and runnable
+# with pydantic alone, and `test_config_and_hygiene` can keep asserting that no
+# core module imports them.
+#
+# databricks-sdk: Unity Catalog metadata + authenticated REST, no compute.
+# mlflow[databricks]: MlflowClient against the `databricks-uc` registry.
+# NOT added: databricks-agents (MLflow 3 APIs suffice),
+# databricks-sql-connector (would need the stopped warehouse).
+live = [
+  "databricks-sdk>=0.40,<1",
+  "mlflow[databricks]>=3.1,<4",
+]
+# DATABRICKS APP RUNTIME (Phase 19.2e).
+#
+# MLflow 3.16.0 ships the `ResponsesAgent` CONTRACT but no agent server: there
+# is no `mlflow.*agent_server` module and no agentserver package on PyPI for
+# this stack. (The `azure-ai-agentserver-*` packages used in Phase 19.1e are
+# Azure's, and are not a Databricks component.) Databricks Apps simply needs an
+# HTTP server bound to DATABRICKS_APP_PORT, so the app serves the genuine
+# ResponsesAgent request/response types over a thin FastAPI surface.
+#
+# Separate from `live` so the offline core and its evaluation never pull a web
+# framework, and separate from `dev` so a test run does not imply the app is
+# installable.
+app = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.32,<1",
+]
+dev = [
+  "httpx>=0.27,<1",
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+  "types-pyyaml>=6.0.12.20260815",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ml_platform_operations_agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

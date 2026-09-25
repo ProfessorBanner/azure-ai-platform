@@ -1,0 +1,226 @@
+# ml-lifecycle-demo same-SHA DEV -> STG promotion
+# (pipeline: aiplatform-ml-lifecycle-stg-cd).
+#
+# STG has no repository trigger of its own: the only automatic path into this
+# pipeline is completion of the ml-lifecycle-demo DEV CD pipeline on main. DEV
+# and STG share one Azure Repos repository, so Azure Pipelines' same-repository
+# pipeline-completion semantics check this run out at exactly the commit DEV
+# built. The promotion gate below re-verifies that rather than assuming it.
+#
+# The gate is inline rather than scripts/ci/verify-promotion.sh: that script
+# encodes the STG -> PROD hop specifically, from its STG_* input names to its
+# failure messages, and is reused verbatim by the PROD pipeline. Feeding DEV
+# values into variables named STG_* would produce gate output that misreports
+# which promotion failed. This mirrors the existing hello-databricks STG
+# pipeline, which draws the same line.
+#
+# What is promoted here is the COMMIT, not a model artefact. STG trains its own
+# model against STG data and registers it in the STG catalog; nothing is copied
+# from DEV. As in DEV, Champion follows the verified Candidate automatically —
+# PROD is where a human decides.
+#
+# Like DEV CD, this pipeline is independent of Terraform: it neither depends on
+# nor triggers any Terraform pipeline.
+trigger: none
+pr: none
+
+name: ml-lifecycle-demo-stg-cd-$(Date:yyyyMMdd)$(Rev:.r)
+
+resources:
+  pipelines:
+    - pipeline: dev
+      source: aiplatform-ml-lifecycle-dev-cd
+      trigger:
+        branches:
+          include:
+            - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  productDir: products/ml-lifecycle-demo
+  modelName: stg.ml_lifecycle_demo.linear_regression_model
+
+  DATABRICKS_HOST: "https://adb-1000000000000003.4.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0002"
+
+steps:
+  - checkout: self
+
+  # Fail-closed promotion gate. Runs before anything is installed or deployed,
+  # so a manual, scheduled or off-branch run stops here rather than reaching
+  # STG. The pipeline-resource variables are passed through env: so that an
+  # undefined macro becomes an inert string that fails a comparison, instead of
+  # being evaluated by the shell.
+  - bash: |
+      set -euo pipefail
+
+      echo "Build.Reason:                        ${BUILD_REASON}"
+      echo "Build.SourceBranch:                  ${BUILD_SOURCEBRANCH}"
+      echo "Build.SourceVersion:                 ${BUILD_SOURCEVERSION}"
+      echo "resources.pipeline.dev.sourceBranch: ${DEV_SOURCE_BRANCH}"
+      echo "resources.pipeline.dev.sourceCommit: ${DEV_SOURCE_COMMIT}"
+      echo "resources.pipeline.dev.runID:        ${DEV_RUN_ID}"
+
+      fail() {
+        echo "PROMOTION GATE FAILED: $1"
+        exit 1
+      }
+
+      [[ "${BUILD_REASON}" == "ResourceTrigger" ]] ||
+        fail "STG runs only via ml-lifecycle-demo DEV CD completion (Build.Reason='${BUILD_REASON}')."
+
+      [[ "${BUILD_SOURCEBRANCH}" == "refs/heads/main" ]] ||
+        fail "STG must build refs/heads/main (got '${BUILD_SOURCEBRANCH}')."
+
+      [[ "${DEV_SOURCE_BRANCH}" == "refs/heads/main" ]] ||
+        fail "Triggering DEV run must originate from refs/heads/main (got '${DEV_SOURCE_BRANCH}')."
+
+      [[ -n "${DEV_RUN_ID}" ]] ||
+        fail "Triggering DEV run ID is empty."
+
+      [[ "${DEV_RUN_ID}" =~ ^[0-9]+$ ]] ||
+        fail "Triggering DEV run ID is unresolved or invalid (got '${DEV_RUN_ID}')."
+
+      [[ "${BUILD_SOURCEVERSION}" == "${DEV_SOURCE_COMMIT}" ]] ||
+        fail "Commit mismatch: STG '${BUILD_SOURCEVERSION}' != DEV '${DEV_SOURCE_COMMIT}'."
+
+      echo "Promotion gate passed: promoting DEV run ${DEV_RUN_ID} at ${BUILD_SOURCEVERSION}."
+    displayName: Verify DEV -> STG Promotion Identity
+    env:
+      BUILD_REASON: $(Build.Reason)
+      BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+      DEV_SOURCE_BRANCH: $(resources.pipeline.dev.sourceBranch)
+      DEV_SOURCE_COMMIT: $(resources.pipeline.dev.sourceCommit)
+      DEV_RUN_ID: $(resources.pipeline.dev.runID)
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(
+        echo "$IDENTITY" |
+        jq -r '.applicationId // .userName // .emails[0].value // empty'
+      )"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected Databricks identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "STG deployment identity verified."
+    displayName: Verify STG Databricks OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # Platform idle-mode gate: reads the committed idle_mode default for stg
+  # (infrastructure/environments/stg/platform_mode.tf) and fails closed when the
+  # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+  # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+  - bash: |
+      set -euo pipefail
+      scripts/ci/check-platform-mode.sh stg
+    displayName: 'Platform mode gate (stg must be ACTIVE)'
+
+  - bash: |
+      set -euo pipefail
+
+      databricks bundle validate -t stg
+      databricks bundle plan -t stg
+      databricks bundle deploy -t stg
+    displayName: Validate, Plan and Deploy STG Bundle
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # Runtime validation, not just a successful deploy: STG trains and registers
+  # its own model against its own catalog, and the evaluation threshold in
+  # train_register gates the promotion to PROD.
+  - bash: |
+      set -euo pipefail
+      databricks bundle run -t stg ml_candidate
+    displayName: Run STG Candidate Job
+    workingDirectory: $(productDir)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # WORKING DIRECTORY IS LOAD-BEARING from here on. The Databricks CLI
+  # auto-discovers databricks.yml when its cwd is inside the Bundle and then
+  # takes the host from that Bundle's DEFAULT target — dev. Running a
+  # control-plane call from $(productDir) therefore pairs this environment's
+  # service-principal client ID with the DEV workspace host, and the failure
+  # surfaces as a missing alias rather than as an auth error. Helper and table
+  # commands run from $(Build.SourcesDirectory), where DATABRICKS_HOST is
+  # authoritative; `databricks bundle` commands keep $(productDir), because
+  # those genuinely need the Bundle.
+  # Resolve the mutable alias ONCE, then work only from the number.
+  - bash: |
+      set -euo pipefail
+
+      CANDIDATE_VERSION="$(./products/ml-lifecycle-demo/scripts/model-promotion.sh resolve-alias "$MODEL_NAME" Candidate)"
+      echo "STG Candidate resolved to version ${CANDIDATE_VERSION}"
+
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-version \
+        "$MODEL_NAME" "$CANDIDATE_VERSION" \
+        --environment stg \
+        --git-sha "$BUILD_SOURCEVERSION" \
+        --require-ready
+
+      echo "##vso[task.setvariable variable=candidateVersion]${CANDIDATE_VERSION}"
+    displayName: Resolve and Verify STG Candidate
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      MODEL_NAME: $(modelName)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh promote "$MODEL_NAME" "$CANDIDATE_VERSION"
+
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Champion "$CANDIDATE_VERSION"
+      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Candidate "$CANDIDATE_VERSION"
+    displayName: Promote STG Candidate to Champion
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      MODEL_NAME: $(modelName)
+      CANDIDATE_VERSION: $(candidateVersion)
+
+  - bash: |
+      set -euo pipefail
+
+      # candidate_predictions, not predictions: like DEV, STG runs no
+      # ml_inference job. validate_candidate already proved the model scores.
+      databricks tables get \
+        stg.ml_lifecycle_demo.candidate_predictions \
+        -o json \
+        | jq '{
+            full_name,
+            table_type,
+            data_source_format,
+            storage_location
+          }'
+
+      echo "PASS: STG candidate scored, verified and promoted to Champion (version $CANDIDATE_VERSION)."
+    displayName: Verify STG Candidate Predictions Table
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      CANDIDATE_VERSION: $(candidateVersion)

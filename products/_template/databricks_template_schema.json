@@ -1,0 +1,83 @@
+{
+  "welcome_message": "Generating a governed ML/AI product for the Azure AI Platform.\n\nEnvironment-owned values (workspace hosts, compute policy IDs, run-as client IDs)\nare supplied by the platform onboarding tooling. They have no defaults here on\npurpose: a product must never carry another environment's identity.\n\nSee docs/platform/product-contract.md before onboarding a new product.",
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Product name in lowercase kebab-case (for example demand-forecasting). Becomes the directory name, the Bundle name and the job name prefix.",
+      "order": 1,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "pattern_match_failure_message": "Must be lowercase kebab-case: start with a letter, then letters, digits or single hyphens (for example demand-forecasting)."
+    },
+    "schema_name": {
+      "type": "string",
+      "description": "Unity Catalog schema the product owns, in snake_case (for example demand_forecasting). The same schema name is used in every environment; only the catalog differs.",
+      "order": 2,
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "pattern_match_failure_message": "Must be lowercase snake_case: start with a letter, then letters, digits or underscores (for example demand_forecasting)."
+    },
+    "dev_workspace_host": {
+      "type": "string",
+      "description": "DEV Databricks workspace URL, including https://.",
+      "order": 3,
+      "pattern": "^https://[A-Za-z0-9.-]+$",
+      "pattern_match_failure_message": "Must be an https:// workspace URL with no trailing path."
+    },
+    "stg_workspace_host": {
+      "type": "string",
+      "description": "STG Databricks workspace URL, including https://.",
+      "order": 4,
+      "pattern": "^https://[A-Za-z0-9.-]+$",
+      "pattern_match_failure_message": "Must be an https:// workspace URL with no trailing path."
+    },
+    "prod_workspace_host": {
+      "type": "string",
+      "description": "PROD Databricks workspace URL, including https://.",
+      "order": 5,
+      "pattern": "^https://[A-Za-z0-9.-]+$",
+      "pattern_match_failure_message": "Must be an https:// workspace URL with no trailing path."
+    },
+    "dev_job_compute_policy_id": {
+      "type": "string",
+      "description": "DEV Databricks compute policy ID governing the product's job cluster.",
+      "order": 6,
+      "pattern": "^[0-9A-F]+$",
+      "pattern_match_failure_message": "Must be a Databricks compute policy ID (uppercase hexadecimal)."
+    },
+    "stg_job_compute_policy_id": {
+      "type": "string",
+      "description": "STG Databricks compute policy ID governing the product's job cluster.",
+      "order": 7,
+      "pattern": "^[0-9A-F]+$",
+      "pattern_match_failure_message": "Must be a Databricks compute policy ID (uppercase hexadecimal)."
+    },
+    "prod_job_compute_policy_id": {
+      "type": "string",
+      "description": "PROD Databricks compute policy ID governing the product's job cluster.",
+      "order": 8,
+      "pattern": "^[0-9A-F]+$",
+      "pattern_match_failure_message": "Must be a Databricks compute policy ID (uppercase hexadecimal)."
+    },
+    "dev_run_as_client_id": {
+      "type": "string",
+      "description": "DEV deployment service principal application (client) ID. The Bundle deploys and runs as this identity.",
+      "order": 9,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "pattern_match_failure_message": "Must be a GUID (service principal application ID)."
+    },
+    "stg_run_as_client_id": {
+      "type": "string",
+      "description": "STG deployment service principal application (client) ID. The Bundle deploys and runs as this identity.",
+      "order": 10,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "pattern_match_failure_message": "Must be a GUID (service principal application ID)."
+    },
+    "prod_run_as_client_id": {
+      "type": "string",
+      "description": "PROD deployment service principal application (client) ID. The Bundle deploys and runs as this identity.",
+      "order": 11,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "pattern_match_failure_message": "Must be a GUID (service principal application ID)."
+    }
+  },
+  "success_message": "\nCreated products/{{.project_name}}.\n\nNext:\n  1. Fill in the owner and monitoring sections of the generated README.\n  2. Confirm the platform has granted {{.schema_name}} in the dev, stg and prod catalogs.\n  3. databricks bundle validate -t dev\n\nThe generated product inherits the governed DEV -> STG -> PROD promotion chain.\nPROD stays approval-gated; nothing here bypasses it."
+}

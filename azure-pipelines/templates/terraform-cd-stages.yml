@@ -1,0 +1,250 @@
+# Reusable CONTROLLED-APPLY stages for ONE platform environment (TFCD-2).
+#
+# Emits two stages for a single environment:
+#   1. validate_plan_<env> — plan-only WIF identity: fmt/lint/Trivy, then
+#                            init/validate/plan of the exact merged commit, a
+#                            destructive-change guard (terraform show -json), and
+#                            promotion of the EXACT binary plan as a short-lived,
+#                            environment-specific internal artifact.
+#   2. apply_<env>         — environment-specific apply WIF identity, behind the
+#                            matching Azure DevOps Environment approval: applies
+#                            the reviewed binary plan verbatim (never re-planning),
+#                            then a post-apply drift check under the plan identity.
+#
+# The wrapper (terraform-cd-platform.yml) instantiates this template once per
+# environment and wires cross-environment ordering via `dependsOnStages`:
+#   - sandbox : independent path (dependsOnStages: [])
+#   - dev     : starts the governed chain (dependsOnStages: [])
+#   - stg     : dependsOnStages: [ apply_dev ]
+#   - prod    : dependsOnStages: [ apply_stg ]  (+ approval on its Environment)
+#
+# Each environment uses INDEPENDENT state, an INDEPENDENT binary plan, a
+# sanitized human-readable plan, the destructive-change guard, exact-plan apply,
+# a post-apply drift check, and ENVIRONMENT-SPECIFIC artifact names.
+#
+# Authentication is Microsoft Entra workload identity federation only: a fresh
+# OIDC token per run. NO storage key, SAS token, client secret or PAT is created,
+# stored or accepted anywhere. The binary plan produced before approval is the
+# ONLY thing applied.
+
+parameters:
+  # Environment or capability name, e.g. `dev` or `foundry-sandbox`. It may
+  # contain hyphens: it is used verbatim in display names, and callers supply
+  # their own (already valid) paths, artifact names and Environment names.
+  #
+  # Azure DevOps STAGE IDENTIFIERS, however, accept only alphanumerics and
+  # underscores, so every generated stage id below sanitises hyphens to
+  # underscores via `replace(parameters.env, '-', '_')`. Hyphen-free values such
+  # as sandbox/dev/stg/prod are unaffected and keep their existing stage ids.
+  # Any cross-stage `dependsOnStages` value a caller passes must use the
+  # SANITISED form (e.g. `apply_foundry_sandbox`).
+  - name: env
+    type: string
+  - name: terraformVersion
+    type: string
+  - name: tflintVersion
+    type: string
+  - name: trivyVersion
+    type: string
+  - name: terraformWorkingDirectory
+    type: string
+  - name: backendConfig
+    type: string
+  - name: planServiceConnection
+    type: string
+  - name: applyServiceConnection
+    type: string
+  - name: environmentName
+    type: string
+  - name: tfResourceGroupName
+    type: string
+  - name: tfStorageAccountName
+    type: string
+  - name: humanArtifactName
+    type: string
+  - name: binaryPlanArtifact
+    type: string
+  - name: binaryPlanStagingDir
+    type: string
+  # Stages that must complete before this environment's validate_plan stage may
+  # start. Empty for independent paths (sandbox, dev); the previous apply stage
+  # for the governed chain (stg depends on apply_dev, prod on apply_stg).
+  - name: dependsOnStages
+    type: object
+    default: []
+  # Additional TF_VAR_* inputs for roots that declare variables beyond the
+  # common resource-group/storage-account pair. Keys are TF_VAR_* names, values
+  # are non-secret literals. Defaults to {}, so every existing caller expands
+  # byte-identically and is unaffected.
+  - name: extraTfVars
+    type: object
+    default: {}
+
+stages:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Validate + Plan (plan-only identity). Produces the reviewed plan.
+  # ---------------------------------------------------------------------------
+  - stage: ${{ format('validate_plan_{0}', replace(parameters.env, '-', '_')) }}
+    displayName: 'Validate & plan · ${{ parameters.env }} (plan-only WIF)'
+    dependsOn: ${{ parameters.dependsOnStages }}
+    jobs:
+      - job: plan
+        displayName: 'Validate, plan (exact main commit), guard · ${{ parameters.env }}'
+        timeoutInMinutes: 30
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - checkout: self
+            clean: true
+            displayName: 'Checkout exact merged main commit'
+
+          - bash: |
+              set -euo pipefail
+              scripts/ci/install-tools.sh
+            displayName: 'Install pinned Terraform, TFLint, Trivy'
+            env:
+              TERRAFORM_VERSION: ${{ parameters.terraformVersion }}
+              TFLINT_VERSION: ${{ parameters.tflintVersion }}
+              TRIVY_VERSION: ${{ parameters.trivyVersion }}
+              TOOLS_BIN: $(Agent.TempDirectory)/tf-ci-tools/bin
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make fmt-check 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/fmt-check.log"
+            displayName: 'Format check (make fmt-check)'
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make lint 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/tflint.log"
+            displayName: 'TFLint (make lint)'
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/logs"
+              make security 2>&1 | tee "$(Build.ArtifactStagingDirectory)/logs/trivy.log"
+            displayName: 'Trivy IaC/secret/vuln scan (make security)'
+
+          - task: AzureCLI@2
+            displayName: 'init/validate/plan + destructive guard · ${{ parameters.env }} (plan-only WIF)'
+            inputs:
+              azureSubscription: ${{ parameters.planServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              failOnStandardError: false
+              inlineScript: |
+                set -euo pipefail
+
+                # Binary plan lives at <workingDir>/terraform.tfplan but MUST be
+                # referenced by its -chdir-relative name by later commands.
+                PLAN_FILE="terraform.tfplan"
+
+                # 1) init/validate/plan -> redacted plan.txt + logs; binary plan
+                #    stays in the workspace; token leak-scan on staged files.
+                scripts/ci/terraform-plan.sh "${{ parameters.terraformWorkingDirectory }}" "${{ parameters.backendConfig }}"
+
+                BINARY_SRC="${{ parameters.terraformWorkingDirectory }}/${PLAN_FILE}"
+                [[ -f "${BINARY_SRC}" ]] || { echo "ERROR: binary plan not produced" >&2; exit 1; }
+
+                # 2) Destructive-change guard on structured JSON (offline).
+                scripts/ci/check-destructive-plan.sh "${{ parameters.terraformWorkingDirectory }}" "${PLAN_FILE}"
+
+                # 3) Promote the binary plan to an env-specific staging dir
+                #    OUTSIDE the published human-readable artifact.
+                mkdir -p "${{ parameters.binaryPlanStagingDir }}"
+                cp "${BINARY_SRC}" "${{ parameters.binaryPlanStagingDir }}/${PLAN_FILE}"
+
+                # 4) Defence in depth: OIDC token must not be in the binary plan.
+                if grep -qF -- "${idToken}" "${{ parameters.binaryPlanStagingDir }}/${PLAN_FILE}"; then
+                  rm -rf "${{ parameters.binaryPlanStagingDir }}"
+                  echo "ERROR: OIDC token detected in binary plan — promotion aborted" >&2
+                  exit 1
+                fi
+            env:
+              TF_VAR_resource_group_name: ${{ parameters.tfResourceGroupName }}
+              TF_VAR_storage_account_name: ${{ parameters.tfStorageAccountName }}
+              ${{ each tfVar in parameters.extraTfVars }}:
+                ${{ tfVar.key }}: ${{ tfVar.value }}
+
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: ${{ parameters.humanArtifactName }}
+            displayName: 'Publish sanitized plan.txt + logs · ${{ parameters.env }}'
+
+          - publish: '${{ parameters.binaryPlanStagingDir }}'
+            artifact: ${{ parameters.binaryPlanArtifact }}
+            displayName: 'Promote binary plan (apply-only) · ${{ parameters.env }}'
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Apply the reviewed plan, gated by the Environment approval.
+  # ---------------------------------------------------------------------------
+  - stage: ${{ format('apply_{0}', replace(parameters.env, '-', '_')) }}
+    displayName: 'Approve & apply · ${{ parameters.env }} (apply WIF)'
+    dependsOn: ${{ format('validate_plan_{0}', replace(parameters.env, '-', '_')) }}
+    condition: succeeded()
+    jobs:
+      - deployment: apply
+        displayName: 'Apply exact reviewed plan · ${{ parameters.env }}'
+        timeoutInMinutes: 30
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        # Binding to the environment triggers its approval check where one is
+        # configured. Default policy: PROD requires a manual approval; sandbox,
+        # dev and stg apply automatically after their guards pass (the human
+        # decision is the reviewed merge to main). See CLAUDE.md and ADR 0005.
+        environment: ${{ parameters.environmentName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  displayName: 'Checkout exact merged main commit'
+
+                - download: current
+                  artifact: ${{ parameters.binaryPlanArtifact }}
+                  displayName: 'Download reviewed binary plan · ${{ parameters.env }}'
+
+                - bash: |
+                    set -euo pipefail
+                    scripts/ci/install-tools.sh
+                  displayName: 'Install pinned Terraform, TFLint, Trivy'
+                  env:
+                    TERRAFORM_VERSION: ${{ parameters.terraformVersion }}
+                    TFLINT_VERSION: ${{ parameters.tflintVersion }}
+                    TRIVY_VERSION: ${{ parameters.trivyVersion }}
+                    TOOLS_BIN: $(Agent.TempDirectory)/tf-ci-tools/bin
+
+                - task: AzureCLI@2
+                  displayName: 'terraform apply <reviewed plan> · ${{ parameters.env }} (apply WIF)'
+                  inputs:
+                    azureSubscription: ${{ parameters.applyServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: scripts/ci/terraform-cd-apply.sh
+                    arguments: '${{ parameters.terraformWorkingDirectory }} ${{ parameters.backendConfig }} "$(Pipeline.Workspace)/${{ parameters.binaryPlanArtifact }}/terraform.tfplan"'
+                    addSpnToEnvironment: true
+                    failOnStandardError: false
+
+                - task: AzureCLI@2
+                  displayName: 'Post-apply drift check · ${{ parameters.env }} (plan WIF, expect exit 0)'
+                  inputs:
+                    # Verify under the PLAN identity that produced the reviewed
+                    # plan — see scripts/ci/terraform-cd-drift-check.sh for why.
+                    azureSubscription: ${{ parameters.planServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: scripts/ci/terraform-cd-drift-check.sh
+                    arguments: '${{ parameters.terraformWorkingDirectory }} ${{ parameters.backendConfig }}'
+                    addSpnToEnvironment: true
+                    failOnStandardError: false
+                  env:
+                    TF_VAR_resource_group_name: ${{ parameters.tfResourceGroupName }}
+                    TF_VAR_storage_account_name: ${{ parameters.tfStorageAccountName }}
+                    ${{ each tfVar in parameters.extraTfVars }}:
+                      ${{ tfVar.key }}: ${{ tfVar.value }}

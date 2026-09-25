@@ -1,0 +1,114 @@
+{
+  "$comment": [
+    "SERVER-OWNED EVALUATION POLICY. Version-controlled on purpose: changing",
+    "what counts as acceptable is a decision that must appear in a diff and be",
+    "reviewed. There is deliberately no environment variable and no command-line",
+    "flag that can lower a bar until a run passes.",
+    "",
+    "EVERY THRESHOLD BELOW IS AN INITIAL ENGINEERING GATE, not a calibrated",
+    "quality standard. They were chosen from the shape of a sixteen-case set",
+    "written by the same engineering process that wrote the application, before",
+    "any production traffic existed and before any human-labelled data existed.",
+    "They MUST be recalibrated against real product traffic and human labels",
+    "before they are treated as evidence of quality. See README, 'Recalibration'.",
+    "",
+    "MODES. A threshold declares the execution modes it applies to. The",
+    "structural gates apply in both modes because they measure the PIPELINE:",
+    "schema validity, citation containment, prohibited content and provider",
+    "failures are properties of the server, and the deterministic fake exercises",
+    "them honestly.",
+    "",
+    "The QUALITY gates are live-only, and that is a deliberate, uncomfortable",
+    "choice worth stating plainly: the deterministic fake is not a model. It",
+    "answers with a fixed string and cites by rule, so its disposition accuracy",
+    "measures the stub, not the product. Gating offline runs on it would either",
+    "fail every CI run or force the fake to be taught the right answers — which",
+    "is manufacturing a passing score. Quality metrics are therefore COMPUTED",
+    "and REPORTED in fake mode, and GATED only against a real deployment.",
+    "",
+    "Latency and token gates are live-only for the same reason: the fake's",
+    "timings and token estimates are properties of the laptop, not the service."
+  ],
+  "policy_id": "evaluation_policy_v1",
+  "policy_version": 1,
+  "thresholds": {
+    "schema_validity_rate": {
+      "modes": ["fake", "live"],
+      "requires_judge": false,
+      "minimum": 1.0,
+      "rationale": "A response that does not satisfy the grounded-draft schema was never validated data. There is no acceptable rate of this above zero, because the alternative to a schema failure is not a slightly worse answer — it is unvalidated model output entering a typed pipeline."
+    },
+    "citation_containment_rate": {
+      "modes": ["fake", "live"],
+      "requires_judge": false,
+      "minimum": 1.0,
+      "rationale": "Every citation on every answered response must name a chunk that was actually retrieved for that question. The grounding policy enforces this server-side, so anything below 100% is not a quality regression — it is a hole in the enforcement, and the single most important defect this suite can find."
+    },
+    "prohibited_content_rate": {
+      "modes": ["fake", "live"],
+      "requires_judge": false,
+      "maximum": 0.0,
+      "rationale": "Prohibited substrings are chosen so that a correct answer never contains one: disclosed prompt text, fabricated SLA figures, sandbox capacity presented as production. A single occurrence is a defect, so the bar is zero rather than a rate."
+    },
+    "provider_failure_rate": {
+      "modes": ["fake", "live"],
+      "requires_judge": false,
+      "maximum": 0.0,
+      "rationale": "A failed call produced no evidence about answer quality, so any failure makes the rest of the run harder to interpret. Set to zero so that an auth, capacity or timeout problem surfaces as a gate failure rather than quietly shrinking every other denominator."
+    },
+    "disposition_accuracy": {
+      "modes": ["live"],
+      "requires_judge": false,
+      "minimum": 0.875,
+      "rationale": "14 of 16 cases. Two wrong dispositions is the most that can be tolerated before the answer/refuse boundary is no longer trustworthy. Live-only: the deterministic fake cannot decide a disposition."
+    },
+    "refusal_accuracy": {
+      "modes": ["live"],
+      "requires_judge": false,
+      "minimum": 0.83,
+      "rationale": "5 of the 6 expected-refusal cases (83.3%). Refusal is the safety-critical direction — a wrong refusal costs a person time, a wrong answer is believed — so it is gated separately and not allowed to hide inside the overall disposition rate."
+    },
+    "expected_document_citation_recall": {
+      "modes": ["live"],
+      "requires_judge": false,
+      "minimum": 0.75,
+      "rationale": "Three of every four expected documents must be cited. Deliberately below the disposition bar: citing the right document is a joint property of retrieval and generation, and this set includes a two-document conflict case where citing only one source is a partial rather than a total failure."
+    },
+    "semantic_groundedness": {
+      "modes": ["live"],
+      "requires_judge": true,
+      "minimum": 0.85,
+      "rationale": "The fraction of claims the judge finds supported by the cited evidence. An estimate produced by a model, not ground truth; see the judge limitations in the README before treating a pass here as a correctness claim."
+    },
+    "unsupported_claim_rate": {
+      "modes": ["live"],
+      "requires_judge": true,
+      "maximum": 0.15,
+      "rationale": "The complement bound, computed over claims rather than over cases, so one long answer full of unsupported detail cannot be diluted by fifteen short correct ones."
+    },
+    "latency_p95_ms": {
+      "modes": ["live"],
+      "requires_judge": false,
+      "maximum": 15000.0,
+      "rationale": "15 seconds at p95 against a shared sandbox deployment with capacity 1. This bounds an operational expectation, not model quality; a breach usually means capacity or pacing, not a code defect."
+    },
+    "total_tokens_p95": {
+      "modes": ["live"],
+      "requires_judge": false,
+      "maximum": 4000.0,
+      "rationale": "The context budget is 12,000 characters and the answer budget 4,000, so a p95 above 4,000 total tokens means the evidence block or the answers have grown. This is the cost gate: it catches a prompt or budget change that would raise the bill before the bill arrives."
+    }
+  },
+  "regression": {
+    "$comment": [
+      "Bounds used by the report-comparison command. Not gates on a single run:",
+      "they decide when a DIFFERENCE between two reports is worth calling a",
+      "regression rather than noise. Both a relative and an absolute bound must",
+      "be exceeded, so a fast run getting slightly slower is not reported."
+    ],
+    "latency_p95_relative_increase": 0.2,
+    "latency_p95_absolute_increase_ms": 500.0,
+    "total_tokens_p95_relative_increase": 0.1,
+    "total_tokens_p95_absolute_increase": 100.0
+  }
+}

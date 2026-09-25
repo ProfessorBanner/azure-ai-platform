@@ -1,0 +1,13 @@
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+location             = "uksouth"
+resource_group_name  = "rg-aiplatform-bootstrap-dev"
+storage_account_name = "stexampletfexample"
+container_name       = "tfstate"
+
+tags = {
+  environment = "dev"
+  platform    = "azure-ai-platform"
+  workload    = "terraform-state"
+  managed_by  = "terraform"
+  owner       = "your-name"
+}

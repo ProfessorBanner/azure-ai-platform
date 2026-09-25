@@ -1,0 +1,31 @@
+# Example variables for the sandbox platform root.
+# Copy to terraform.tfvars (git-ignored) for local plans, or supply via TF_VAR_*
+# in CI. No secrets belong in this file — only non-sensitive identifiers.
+#
+# subscription_id is normally injected at runtime (TF_VAR_subscription_id
+# resolved from the pipeline service connection); set it here only for local use.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "uksouth"
+environment         = "sandbox"
+resource_group_name = "rg-aiplatform-sandbox"
+
+# Storage account and Key Vault names are GLOBALLY unique — confirm availability
+# (and add a suffix if taken) before applying.
+storage_account_name = "stexamplesandboxdata"
+key_vault_name       = "kv-aiplatform-sandbox"
+
+log_analytics_workspace_name = "log-aiplatform-sandbox"
+log_analytics_retention_days = 30
+
+# Sandbox cost/disposability posture (cheaper than governed environments).
+log_analytics_daily_quota_gb       = 0.5
+storage_soft_delete_retention_days = 1
+
+databricks_workspace_name        = "dbw-aiplatform-sandbox"
+databricks_access_connector_name = "ac-aiplatform-databricks-sandbox"
+
+# Platform mode. The COMMITTED default in variables.tf is the source of truth
+# (CI/CD does not pass this value); set it here only to preview the other mode
+# locally. See docs/runbooks/platform-idle-mode.md.
+idle_mode = false

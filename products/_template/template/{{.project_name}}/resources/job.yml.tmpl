@@ -1,0 +1,39 @@
+# {{.project_name}} standard job.
+#
+# One classic shared job cluster, declared once at job level and referenced by
+# key, so additional tasks join the running cluster instead of starting another.
+# Compute shape is constrained by the environment's compute policy; catalog and
+# schema reach the workload as environment variables, never as literals in code.
+
+resources:
+  jobs:
+    main_job:
+      name: {{.project_name}}-${bundle.target}
+
+      run_as:
+        service_principal_name: ${var.run_as_service_principal_name}
+
+      job_clusters:
+        - job_cluster_key: {{.schema_name}}
+
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "Standard_DS3_v2"
+
+            autoscale:
+              min_workers: 1
+              max_workers: 1
+
+            policy_id: ${var.job_compute_policy_id}
+
+            spark_env_vars:
+              CATALOG: ${var.catalog}
+              SCHEMA: ${var.schema}
+
+      tasks:
+        - task_key: main
+
+          job_cluster_key: {{.schema_name}}
+
+          spark_python_task:
+            python_file: ../src/main.py

@@ -1,0 +1,179 @@
+# Terraform CI — PLAN ONLY for the PLATFORM component, ALL environments.
+#
+# One platform CI architecture (not four pipeline families): this single pipeline
+# independently validates and plans EACH environment — sandbox, dev, stg and
+# prod — as its own stage, reusing the shared step template
+# templates/terraform-checks.yml. Every stage uses the SAME plan-only identity
+# (sc-azure-terraform-plan) and differs only in working directory, backend
+# config, TF_VAR inputs and published artifact name.
+#
+# These are ADVISORY PREVIEW plans for reviewers on a PR — they are NOT the
+# deployment plans. The CD pipeline (terraform-cd-platform.yml) re-plans each
+# environment from the merged commit and applies that exact binary plan.
+#
+# This pipeline MUST NEVER run `terraform apply` or `terraform destroy`. The plan
+# identity holds only Reader (subscription) + Storage Blob Data Contributor
+# (state container) and cannot mutate infrastructure.
+#
+# PR validation is triggered by an Azure Repos branch-policy Build Validation on
+# `main` (a manual Azure DevOps step), NOT by a YAML `pr:` trigger — hence
+# `pr: none`. See docs/runbooks/terraform-ci.md.
+
+name: terraform-ci-platform-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+variables:
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: tflintVersion
+    value: '0.53.0'
+  - name: trivyVersion
+    value: '0.69.3'
+  - name: planServiceConnection
+    value: 'sc-azure-terraform-plan'
+
+stages:
+  # --- FOUNDRY CAPABILITY LAB (sandbox capability root; NOT an environment) ---
+  #
+  # Plan-only validation of infrastructure/capabilities/ai-foundry/sandbox, whose
+  # state (capabilities/ai-foundry/sandbox.tfstate) is independent of every
+  # platform environment state. Adding this stage broadens NO existing state.
+  #
+  # The plan needs a value for `allowed_ip_cidrs` (the account is default-deny
+  # and the variable has no default). CI supplies an RFC 5737 DOCUMENTATION
+  # placeholder: these CI plans are advisory previews for reviewers, never the
+  # deployment plan, and no real address belongs in this repository. The real
+  # allow-list is supplied at apply time by the manual-only CD pipeline
+  # (terraform-cd-foundry-sandbox.yml).
+  - stage: ci_foundry_sandbox
+    displayName: 'CI · foundry sandbox capability (validate + plan)'
+    dependsOn: []
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan (foundry sandbox)'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: 'infrastructure/capabilities/ai-foundry/sandbox'
+              backendConfig: 'backend/capability-ai-foundry-sandbox.hcl'
+              planServiceConnection: $(planServiceConnection)
+              tfResourceGroupName: 'rg-aiplatform-sandbox'
+              tfStorageAccountName: 'stexamplesandboxdata'
+              artifactName: 'terraform-plan-foundry-sandbox'
+              extraTfVars:
+                TF_VAR_allowed_ip_cidrs: '["192.0.2.0/24"]'
+
+  # --- SANDBOX (separate environment class; not in the promotion chain) -------
+  - stage: ci_sandbox
+    displayName: 'CI · sandbox (validate + plan)'
+    dependsOn: []
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan (sandbox)'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: 'infrastructure/environments/sandbox'
+              backendConfig: 'backend/platform-sandbox.hcl'
+              planServiceConnection: $(planServiceConnection)
+              tfResourceGroupName: 'rg-aiplatform-sandbox'
+              tfStorageAccountName: 'stexamplesandboxdata'
+              artifactName: 'terraform-plan-sandbox'
+
+  # --- DEV (first governed deployment environment) ----------------------------
+  - stage: ci_dev
+    displayName: 'CI · dev (validate + plan)'
+    dependsOn: []
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan (dev)'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: 'infrastructure/environments/dev'
+              backendConfig: 'backend/platform-dev.hcl'
+              planServiceConnection: $(planServiceConnection)
+              tfResourceGroupName: 'rg-aiplatform-dev'
+              tfStorageAccountName: 'stexampledevdata'
+              artifactName: 'terraform-plan-dev'
+
+  # --- STG --------------------------------------------------------------------
+  - stage: ci_stg
+    displayName: 'CI · stg (validate + plan)'
+    dependsOn: []
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan (stg)'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: 'infrastructure/environments/stg'
+              backendConfig: 'backend/platform-stg.hcl'
+              planServiceConnection: $(planServiceConnection)
+              tfResourceGroupName: 'rg-aiplatform-stg'
+              tfStorageAccountName: 'stexamplestgdata'
+              artifactName: 'terraform-plan-stg'
+
+  # --- PROD -------------------------------------------------------------------
+  - stage: ci_prod
+    displayName: 'CI · prod (validate + plan)'
+    dependsOn: []
+    jobs:
+      - job: plan
+        displayName: 'Validate and plan (prod)'
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 5
+        pool:
+          vmImage: ubuntu-latest
+        workspace:
+          clean: all
+        steps:
+          - template: templates/terraform-checks.yml
+            parameters:
+              terraformVersion: $(terraformVersion)
+              tflintVersion: $(tflintVersion)
+              trivyVersion: $(trivyVersion)
+              workingDirectory: 'infrastructure/environments/prod'
+              backendConfig: 'backend/platform-prod.hcl'
+              planServiceConnection: $(planServiceConnection)
+              tfResourceGroupName: 'rg-aiplatform-prod'
+              tfStorageAccountName: 'stexampleproddata'
+              artifactName: 'terraform-plan-prod'

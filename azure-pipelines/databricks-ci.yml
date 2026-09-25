@@ -1,0 +1,65 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  DATABRICKS_HOST: "https://adb-1000000000000002.12.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000c0100"
+
+steps:
+  - checkout: self
+
+  - bash: |
+      set -euo pipefail
+      curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      databricks version
+    displayName: Install Databricks CLI
+
+  - bash: |
+      set -euo pipefail
+
+      databricks auth describe
+
+      IDENTITY="$(databricks current-user me -o json)"
+      echo "$IDENTITY" | jq .
+
+      ACTUAL_APP_ID="$(echo "$IDENTITY" | jq -r '.applicationId // .userName // empty')"
+
+      if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+        echo "Unexpected Databricks identity."
+        echo "Expected: $DATABRICKS_CLIENT_ID"
+        echo "Actual:   $ACTUAL_APP_ID"
+        exit 1
+      fi
+
+      echo "Databricks CI workload identity verified."
+    displayName: Verify Databricks CI OIDC
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  - bash: |
+      set -euo pipefail
+
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+      export PATH="$HOME/.local/bin:$PATH"
+
+      uv --version
+      uv sync --frozen
+
+      uv run ruff format --check .
+      uv run ruff check .
+      uv run mypy products/hello-databricks/src products/hello-databricks/tests
+      uv run pytest -v
+    displayName: Run Python Quality Gates
+
+  - bash: |
+      set -euo pipefail
+      cd products/hello-databricks
+
+      databricks bundle validate -t dev
+    displayName: Validate DEV Bundle
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

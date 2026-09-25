@@ -1,0 +1,56 @@
+# Product-local Python configuration for platform-engineering-assistant.
+#
+# Deliberately independent of the repository root project and of
+# labs/foundry-capability-lab. The lab is a disposable experiment; a product
+# must not import from it, so the architectural patterns it established are
+# re-implemented here rather than depended upon. tests/test_source_hygiene.py
+# enforces that boundary.
+#
+# Each dependency is added by the batch that first uses it, so the lock file
+# never implies capability the product does not have. Phase 17.1c introduces the
+# HTTP surface and the generation provider, hence fastapi/uvicorn (the API) and
+# openai/azure-identity (the Azure OpenAI Responses adapter).
+
+[project]
+name = "platform-engineering-assistant"
+version = "0.1.0"
+description = "Grounded question answering over the approved documentation of this Azure AI platform."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "azure-identity>=1.19,<2",
+  "fastapi>=0.115,<1",
+  "openai>=1.99,<3",
+  "pydantic>=2.9,<3",
+  "uvicorn>=0.32,<1",
+]
+
+[dependency-groups]
+dev = [
+  # httpx backs fastapi.testclient.TestClient.
+  "httpx>=0.27,<1",
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/platform_engineering_assistant"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

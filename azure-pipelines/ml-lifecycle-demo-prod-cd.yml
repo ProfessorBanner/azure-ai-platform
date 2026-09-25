@@ -1,0 +1,411 @@
+# ml-lifecycle-demo governed same-SHA STG -> PROD promotion
+# (pipeline: aiplatform-ml-lifecycle-prod-cd).
+#
+# PROD has no repository trigger of its own: the only automatic path into this
+# pipeline is completion of the ml-lifecycle-demo STG CD pipeline on main. DEV,
+# STG and PROD share one Azure Repos repository, so Azure Pipelines'
+# same-repository pipeline-completion semantics check this run out at exactly the
+# commit STG deployed. The promotion gate re-verifies that rather than assuming
+# it, and it reuses scripts/ci/verify-promotion.sh unchanged.
+#
+# CODE IS PROMOTED. MODELS ARE NOT. PROD trains its own model against PROD data
+# and registers it in the PROD catalog; no artefact is copied from DEV or STG.
+# What crosses the environment boundary is the commit — see
+# products/ml-lifecycle-demo/README.md.
+#
+# THREE stages, and TWO approvals on the aiplatform-prod Environment:
+#
+#   1. promotion_gate    — cheap, no environment, no approval burned. A run that
+#                          should not exist dies here.
+#   2. evaluate_candidate — APPROVAL 1 (deploy). Deploys the Bundle and runs the
+#                          candidate job: PROD trains, registers a Candidate,
+#                          and proves it scores. Champion is NOT moved. The
+#                          exact numbered version is recorded in an immutable
+#                          RELEASE MANIFEST, published as the pipeline artifact
+#                          `prod-model-candidate` for the approver to read.
+#   3. promote_release   — APPROVAL 2 (release). The human decision. Downloads
+#                          that manifest from THIS run, validates every field
+#                          against the workspace and against Build.SourceVersion,
+#                          re-fetches and re-verifies that exact numbered
+#                          version, and only then moves Champion. Production
+#                          inference runs afterwards.
+#
+# THE RELEASE UNIT TRAVELS AS AN ARTIFACT, NOT A VARIABLE. A stage output
+# variable is invisible after the run, easy to get subtly wrong in a
+# stageDependencies expression, and proves nothing about what the approver
+# actually saw. The manifest is evidence attached to this specific run: if it is
+# absent, malformed, for another commit, another catalog, another product or a
+# non-READY version, the release stops. Neither stage EVER re-resolves the
+# mutable Candidate alias after approval — that would release whatever happened
+# to be Candidate at approval time rather than the version that was evaluated.
+#
+# The two-approval shape is the whole point: approval 1 authorises spending PROD
+# compute to produce evidence; approval 2 authorises releasing the specific
+# artefact that evidence describes. Collapsing them would mean approving a model
+# before anyone had seen how it scored.
+#
+# Independent of Terraform, like the DEV and STG pipelines: no dependency on and
+# no trigger from any Terraform pipeline.
+trigger: none
+pr: none
+
+name: ml-lifecycle-demo-prod-cd-$(Date:yyyyMMdd)$(Rev:.r)
+
+resources:
+  pipelines:
+    - pipeline: stg
+      source: aiplatform-ml-lifecycle-stg-cd
+      trigger:
+        branches:
+          include:
+            - main
+
+variables:
+  productDir: products/ml-lifecycle-demo
+  modelName: prod.ml_lifecycle_demo.linear_regression_model
+
+  DATABRICKS_HOST: "https://adb-1000000000000004.15.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0003"
+
+stages:
+  - stage: promotion_gate
+    displayName: Promotion Gate
+    jobs:
+      - job: verify_promotion
+        displayName: Verify STG -> PROD Promotion Identity
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # The gate script lives in the repository, so the repository must be
+          # present. Nothing else about the stage changes: still no environment,
+          # still no approval burned.
+          - checkout: self
+
+          # Fail-closed. The pipeline-resource variables are passed through env:
+          # so that an undefined macro becomes an inert string that fails a
+          # comparison, instead of being evaluated by the shell.
+          - bash: ./scripts/ci/verify-promotion.sh
+            displayName: Verify STG -> PROD Promotion Identity
+            env:
+              BUILD_REASON: $(Build.Reason)
+              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              STG_SOURCE_BRANCH: $(resources.pipeline.stg.sourceBranch)
+              STG_SOURCE_COMMIT: $(resources.pipeline.stg.sourceCommit)
+              STG_RUN_ID: $(resources.pipeline.stg.runID)
+
+  # --- APPROVAL 1: deploy and produce candidate evidence ---------------------
+  - stage: evaluate_candidate
+    displayName: Deploy and Evaluate PROD Candidate
+    dependsOn: promotion_gate
+    condition: succeeded()
+    jobs:
+      - deployment: evaluate_candidate
+        displayName: Train and Evaluate PROD Candidate
+        pool:
+          vmImage: ubuntu-latest
+        # The existing Azure DevOps Environment approval on aiplatform-prod.
+        # It is configured on the Environment, not in YAML.
+        environment: aiplatform-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # Deployment jobs do not check out sources implicitly.
+                - checkout: self
+
+                - bash: |
+                    set -euo pipefail
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    databricks version
+                  displayName: Install Databricks CLI
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks auth describe
+
+                    IDENTITY="$(databricks current-user me -o json)"
+                    echo "$IDENTITY" | jq .
+
+                    ACTUAL_APP_ID="$(
+                      echo "$IDENTITY" |
+                      jq -r '.applicationId // .userName // .emails[0].value // empty'
+                    )"
+
+                    if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+                      echo "Unexpected PROD deployment identity."
+                      echo "Expected: $DATABRICKS_CLIENT_ID"
+                      echo "Actual:   $ACTUAL_APP_ID"
+                      exit 1
+                    fi
+
+                    echo "PROD deployment identity verified."
+                  displayName: Verify PROD CD OIDC
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                # Platform idle-mode gate: reads the committed idle_mode default for prod
+                # (infrastructure/environments/prod/platform_mode.tf) and fails closed when the
+                # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+                # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+                - bash: |
+                    set -euo pipefail
+                    scripts/ci/check-platform-mode.sh prod
+                  displayName: 'Platform mode gate (prod must be ACTIVE)'
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks bundle validate -t prod
+                    databricks bundle plan -t prod
+                    databricks bundle deploy -t prod
+                  displayName: Validate, Plan and Deploy PROD Bundle
+                  workingDirectory: $(productDir)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                # prepare_data -> train_register -> validate_candidate.
+                # Registers a Candidate and proves it scores. Champion is
+                # untouched: this stage produces evidence, not a release.
+                - bash: |
+                    set -euo pipefail
+                    databricks bundle run -t prod ml_candidate
+                  displayName: Run PROD Candidate Job
+                  workingDirectory: $(productDir)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                # WORKING DIRECTORY IS LOAD-BEARING from here on. The Databricks CLI
+                # auto-discovers databricks.yml when its cwd is inside the Bundle and then
+                # takes the host from that Bundle's DEFAULT target — dev. Running a
+                # control-plane call from $(productDir) therefore pairs this environment's
+                # service-principal client ID with the DEV workspace host, and the failure
+                # surfaces as a missing alias rather than as an auth error. Helper and table
+                # commands run from $(Build.SourcesDirectory), where DATABRICKS_HOST is
+                # authoritative; `databricks bundle` commands keep $(productDir), because
+                # those genuinely need the Bundle.
+                # Resolve the mutable alias ONCE and pin the number. This exact
+                # integer — recorded in the manifest below — is the release unit.
+                # It is the last time this pipeline looks at the alias.
+                - bash: |
+                    set -euo pipefail
+
+                    CANDIDATE_VERSION="$(./products/ml-lifecycle-demo/scripts/model-promotion.sh resolve-alias "$MODEL_NAME" Candidate)"
+                    echo "PROD Candidate resolved to version ${CANDIDATE_VERSION}"
+
+                    # write-manifest verifies the version in full (catalog, Git
+                    # SHA, READY) and refuses to write anything if it fails, so
+                    # the manifest can never contain an unverified claim.
+                    ./products/ml-lifecycle-demo/scripts/model-promotion.sh write-manifest \
+                      "$MODEL_NAME" "$CANDIDATE_VERSION" \
+                      --environment prod \
+                      --git-sha "$BUILD_SOURCEVERSION" \
+                      --output "$BUILD_ARTIFACTSTAGINGDIRECTORY/model-release-manifest.json"
+                  displayName: Record PROD Release Manifest
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    MODEL_NAME: $(modelName)
+                    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+                    BUILD_ARTIFACTSTAGINGDIRECTORY: $(Build.ArtifactStagingDirectory)
+
+                # Human-readable evidence to sit alongside the manifest. The
+                # manifest is what the release stage machine-verifies; this is
+                # what the approver reads.
+                - bash: |
+                    set -euo pipefail
+
+                    MANIFEST="$BUILD_ARTIFACTSTAGINGDIRECTORY/model-release-manifest.json"
+
+                    CANDIDATE_VERSION="$(
+                      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-manifest "$MANIFEST" \
+                        --model "$MODEL_NAME" --environment prod --git-sha "$BUILD_SOURCEVERSION"
+                    )"
+
+                    {
+                      ./products/ml-lifecycle-demo/scripts/model-promotion.sh describe-version "$MODEL_NAME" "$CANDIDATE_VERSION"
+
+                      databricks tables get \
+                        prod.ml_lifecycle_demo.candidate_predictions \
+                        -o json \
+                        | jq '{
+                            full_name,
+                            table_type,
+                            data_source_format,
+                            storage_location
+                          }'
+
+                      echo "AWAITING APPROVAL to release version ${CANDIDATE_VERSION} as Champion."
+                    } | tee "$BUILD_ARTIFACTSTAGINGDIRECTORY/candidate-evidence.txt"
+                  displayName: Publish PROD Candidate Evidence
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    MODEL_NAME: $(modelName)
+                    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+                    BUILD_ARTIFACTSTAGINGDIRECTORY: $(Build.ArtifactStagingDirectory)
+
+                - task: PublishPipelineArtifact@1
+                  displayName: Publish Release Manifest and Evidence
+                  inputs:
+                    targetPath: $(Build.ArtifactStagingDirectory)
+                    artifact: prod-model-candidate
+
+  # --- APPROVAL 2: release the exact evaluated version -----------------------
+  - stage: promote_release
+    displayName: Approve and Release PROD Champion
+    dependsOn: evaluate_candidate
+    condition: succeeded()
+    jobs:
+      - deployment: promote_release
+        displayName: Release Approved Version as Champion
+        pool:
+          vmImage: ubuntu-latest
+        # SECOND request against the same Environment approval. Approvers are
+        # asked once to authorise producing evidence, and again to authorise
+        # releasing the artefact that evidence describes.
+        environment: aiplatform-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - bash: |
+                    set -euo pipefail
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    databricks version
+                  displayName: Install Databricks CLI
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks auth describe
+
+                    IDENTITY="$(databricks current-user me -o json)"
+
+                    ACTUAL_APP_ID="$(
+                      echo "$IDENTITY" |
+                      jq -r '.applicationId // .userName // .emails[0].value // empty'
+                    )"
+
+                    if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+                      echo "Unexpected PROD deployment identity."
+                      echo "Expected: $DATABRICKS_CLIENT_ID"
+                      echo "Actual:   $ACTUAL_APP_ID"
+                      exit 1
+                    fi
+
+                    echo "PROD release identity verified."
+                  displayName: Verify PROD Release OIDC
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                # The release unit, recovered from THIS run's artifact rather
+                # than from a variable. `current` scopes the download to this
+                # pipeline run, so a manifest from any other run cannot be
+                # substituted.
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download Approved Release Manifest
+                  inputs:
+                    buildType: current
+                    artifactName: prod-model-candidate
+                    targetPath: $(Pipeline.Workspace)/prod-model-candidate
+
+                # Validate every field before touching the registry: product,
+                # model name, PROD catalog, numeric version, READY status, and
+                # the commit against Build.SourceVersion. An absent or
+                # disagreeing manifest stops the release — it is never repaired
+                # by re-resolving the Candidate alias.
+                - bash: |
+                    set -euo pipefail
+
+                    MANIFEST="$PIPELINE_WORKSPACE/prod-model-candidate/model-release-manifest.json"
+
+                    echo "Approved release manifest:"
+                    cat "$MANIFEST"
+
+                    CANDIDATE_VERSION="$(
+                      ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-manifest "$MANIFEST" \
+                        --model "$MODEL_NAME" --environment prod --git-sha "$BUILD_SOURCEVERSION"
+                    )"
+
+                    echo "##vso[task.setvariable variable=candidateVersion]${CANDIDATE_VERSION}"
+                  displayName: Validate Approved Release Manifest
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    MODEL_NAME: $(modelName)
+                    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+                    PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+
+                # Re-fetch and re-verify the SAME number against the workspace
+                # after the wait. Time passed while a human decided; the artefact
+                # must still be the PROD-trained, same-commit, READY version the
+                # manifest describes.
+                - bash: |
+                    set -euo pipefail
+
+                    ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-version \
+                      "$MODEL_NAME" "$CANDIDATE_VERSION" \
+                      --environment prod \
+                      --git-sha "$BUILD_SOURCEVERSION" \
+                      --require-ready
+                  displayName: Re-verify Approved Version After Approval
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    MODEL_NAME: $(modelName)
+                    CANDIDATE_VERSION: $(candidateVersion)
+                    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+                - bash: |
+                    set -euo pipefail
+
+                    ./products/ml-lifecycle-demo/scripts/model-promotion.sh promote "$MODEL_NAME" "$CANDIDATE_VERSION"
+                    ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Champion "$CANDIDATE_VERSION"
+                  displayName: Move Champion to the Approved Version
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    MODEL_NAME: $(modelName)
+                    CANDIDATE_VERSION: $(candidateVersion)
+
+                # Production inference, on its own policy-governed cluster, with
+                # the newly released Champion. It mutates no registry metadata:
+                # it reads the alias and writes data.
+                - bash: |
+                    set -euo pipefail
+                    databricks bundle run -t prod ml_inference
+                  displayName: Run PROD Inference Job
+                  workingDirectory: $(productDir)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks tables get \
+                      prod.ml_lifecycle_demo.predictions \
+                      -o json \
+                      | jq '{
+                          full_name,
+                          table_type,
+                          data_source_format,
+                          storage_location
+                        }'
+
+                    # Champion must STILL be the approved version after
+                    # inference: anything else means something moved the alias
+                    # during the release, and the predictions just written
+                    # cannot be attributed to the approved model.
+                    ./products/ml-lifecycle-demo/scripts/model-promotion.sh verify-alias "$MODEL_NAME" Champion "$CANDIDATE_VERSION"
+
+                    echo "PASS: PROD released version ${CANDIDATE_VERSION} as Champion and scored predictions."
+                  displayName: Verify PROD Predictions and Champion Identity
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    MODEL_NAME: $(modelName)
+                    CANDIDATE_VERSION: $(candidateVersion)

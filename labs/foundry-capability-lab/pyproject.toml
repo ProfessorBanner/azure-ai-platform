@@ -1,0 +1,46 @@
+# Lab-local Python configuration for the Foundry capability lab.
+#
+# Deliberately independent of the repository root project. The lab needs the
+# OpenAI SDK, azure-identity and Pydantic; the root project has no runtime
+# dependencies and its pytest run must stay free of them. This mirrors the
+# convention already used by products/engineering-test-platform.
+
+[project]
+name = "foundry-capability-lab"
+version = "0.1.0"
+description = "Phase 16.2 data-plane capability proof for the sandbox Microsoft Foundry deployment: keyless Entra ID auth, structured output and telemetry capture."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "azure-identity>=1.19,<2",
+  "openai>=1.99,<3",
+  "pydantic>=2.9,<3",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/foundry_capability_lab"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

@@ -1,0 +1,12 @@
+# Gitleaks configuration for the portfolio edition.
+# Only deliberately synthetic credential-shaped fixtures used by the
+# credential-scanner and metadata-sanitiser unit tests are allow-listed.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic test fixtures that exercise the repository's own secret detection"
+paths = [
+  '''products/platform-engineering-assistant/tests/test_corpus_loader\.py''',
+  '''products/ml-platform-operations-agent/tests/test_tracing\.py''',
+]

@@ -1,0 +1,79 @@
+# {{.project_name}} — governed Databricks Asset Bundle.
+#
+# Generated from products/_template. The structure follows the platform's proven
+# reference pattern: one source tree, one Bundle, three governed targets, and
+# every environment-owned value injected as a Bundle variable rather than written
+# into product code. See docs/platform/product-contract.md.
+
+bundle:
+  name: {{.project_name}}
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the deployment target
+
+  schema:
+    description: Unity Catalog schema for the deployment target
+
+  job_compute_policy_id:
+    description: Databricks compute policy for the deployment target
+
+  run_as_service_principal_name:
+    description: Deployment service principal the job runs as in this target
+
+targets:
+  dev:
+    default: true
+
+    workspace:
+      host: {{.dev_workspace_host}}
+      root_path: /Workspace/Users/{{.dev_run_as_client_id}}/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "{{.dev_run_as_client_id}}"
+
+    variables:
+      catalog: dev
+      schema: {{.schema_name}}
+      job_compute_policy_id: "{{.dev_job_compute_policy_id}}"
+      run_as_service_principal_name: "{{.dev_run_as_client_id}}"
+
+  stg:
+    workspace:
+      host: {{.stg_workspace_host}}
+      root_path: /Workspace/Users/{{.stg_run_as_client_id}}/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "{{.stg_run_as_client_id}}"
+
+    variables:
+      catalog: stg
+      schema: {{.schema_name}}
+      job_compute_policy_id: "{{.stg_job_compute_policy_id}}"
+      run_as_service_principal_name: "{{.stg_run_as_client_id}}"
+
+  prod:
+    # Production deployment mode: no per-user resource prefixing, no development
+    # markers, and run_as must be explicit. Pinning git.branch to main keeps the
+    # deployed bundle's recorded Git provenance fixed rather than inferred from
+    # whatever branch the agent happens to check out.
+    mode: production
+
+    git:
+      branch: main
+
+    workspace:
+      host: {{.prod_workspace_host}}
+      root_path: /Workspace/Users/{{.prod_run_as_client_id}}/.bundle/${bundle.name}/${bundle.target}
+
+    run_as:
+      service_principal_name: "{{.prod_run_as_client_id}}"
+
+    variables:
+      catalog: prod
+      schema: {{.schema_name}}
+      job_compute_policy_id: "{{.prod_job_compute_policy_id}}"
+      run_as_service_principal_name: "{{.prod_run_as_client_id}}"

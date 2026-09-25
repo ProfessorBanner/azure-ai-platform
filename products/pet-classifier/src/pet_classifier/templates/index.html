@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+  {% if error %}
+    <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <section class="upload">
+    <h2>Classify an image</h2>
+    <form action="/predict" method="post" enctype="multipart/form-data">
+      <label for="file">JPEG or PNG, up to {{ max_upload_mb }} MB</label>
+      <input id="file" name="file" type="file" accept="image/jpeg,image/png" required>
+      <button type="submit">Predict</button>
+    </form>
+    <p class="note">The same prediction is available as JSON at <code>POST /api/v1/predict</code>.</p>
+  </section>
+{% endblock %}

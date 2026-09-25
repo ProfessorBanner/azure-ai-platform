@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pet Classifier</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Pet Classifier</h1>
+      <p class="subtitle">Oxford-IIIT Pet, 37 breeds. ResNet-18 backbone, locally trained head. G1: local CPU baseline.</p>
+    </header>
+
+    <section class="model-card" aria-label="Active model">
+      <dl>
+        <dt>Active model version</dt>
+        <dd><code>{{ model_version }}</code></dd>
+        <dt>Classes</dt>
+        <dd>{{ num_classes }}</dd>
+        <dt>Smoke model</dt>
+        <dd>
+          {% if smoke %}
+            <span class="badge badge-warn">yes</span>
+            <span class="note">Trained on 4 images per class for one epoch to prove the pipeline. Its predictions are not meaningful.</span>
+          {% else %}
+            <span class="badge badge-ok">no</span>
+          {% endif %}
+        </dd>
+        <dt>Tracking</dt>
+        <dd><a href="{{ mlflow_url }}" rel="noopener">Open the local MLflow UI</a></dd>
+      </dl>
+    </section>
+
+    {% block content %}{% endblock %}
+
+    <footer class="footer">
+      <p>Scores are softmax outputs of the model. They are model scores, not calibrated probabilities, and carry no confidence guarantee. The classifier cannot reliably reject images that are not pets: it always answers with one of the 37 breeds.</p>
+      <p>Uploaded images are decoded in memory for one prediction and are not stored.</p>
+    </footer>
+  </main>
+</body>
+</html>

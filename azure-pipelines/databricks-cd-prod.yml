@@ -1,0 +1,146 @@
+# Governed same-SHA STG -> PROD promotion (pipeline: aiplatform-dbx-prod-cd).
+#
+# PROD has no repository trigger of its own: the only automatic path into this
+# pipeline is completion of the STG CD pipeline on main. DEV, STG and PROD share
+# one Azure Repos repository, so Azure Pipelines' same-repository
+# pipeline-completion semantics check this run out at exactly the commit STG
+# deployed. The promotion gate re-verifies that rather than assuming it.
+#
+# Two stages, deliberately:
+#   1. promotion_gate  — cheap, no environment, no checkout, no approval burned.
+#                        A run that should not exist dies here.
+#   2. deploy_prod     — a deployment job bound to the aiplatform-prod
+#                        Environment, which is the external Azure DevOps manual
+#                        approval boundary. Approvers are only ever asked about
+#                        runs that already proved their provenance.
+trigger: none
+pr: none
+
+resources:
+  pipelines:
+    - pipeline: stg
+      source: aiplatform-dbx-stg-cd
+      trigger:
+        branches:
+          include:
+            - main
+
+variables:
+  DATABRICKS_HOST: "https://adb-1000000000000004.15.azuredatabricks.net"
+  DATABRICKS_AUTH_TYPE: "azure-devops-oidc"
+  DATABRICKS_CLIENT_ID: "2222aaaa-0000-4000-8000-0000000d0003"
+
+stages:
+  - stage: promotion_gate
+    displayName: Promotion Gate
+    jobs:
+      - job: verify_promotion
+        displayName: Verify STG -> PROD Promotion Identity
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # The gate compares run metadata only, but its logic now lives in
+          # scripts/ci/verify-promotion.sh so it can be run locally, so the
+          # repository must be present. Nothing else about the stage changes:
+          # still no environment, still no approval burned.
+          - checkout: self
+
+          # Fail-closed. The pipeline-resource variables are passed through env:
+          # so that an undefined macro becomes an inert string that fails a
+          # comparison, instead of being evaluated by the shell.
+          - bash: ./scripts/ci/verify-promotion.sh
+            displayName: Verify STG -> PROD Promotion Identity
+            env:
+              BUILD_REASON: $(Build.Reason)
+              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              STG_SOURCE_BRANCH: $(resources.pipeline.stg.sourceBranch)
+              STG_SOURCE_COMMIT: $(resources.pipeline.stg.sourceCommit)
+              STG_RUN_ID: $(resources.pipeline.stg.runID)
+
+  - stage: deploy_prod
+    displayName: Deploy PROD Bundle
+    dependsOn: promotion_gate
+    condition: succeeded()
+    jobs:
+      - deployment: deploy_prod
+        displayName: Deploy hello-databricks to PROD
+        pool:
+          vmImage: ubuntu-latest
+        # The Azure DevOps Environment approval on aiplatform-prod is the human
+        # gate for PROD. It is configured on the Environment, not in YAML.
+        environment: aiplatform-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # Deployment jobs do not check out sources implicitly.
+                - checkout: self
+
+                - bash: |
+                    set -euo pipefail
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    databricks version
+                  displayName: Install Databricks CLI
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks auth describe
+
+                    IDENTITY="$(databricks current-user me -o json)"
+                    echo "$IDENTITY" | jq .
+
+                    ACTUAL_APP_ID="$(
+                      echo "$IDENTITY" |
+                      jq -r '.applicationId // .userName // .emails[0].value // empty'
+                    )"
+
+                    if [[ "$ACTUAL_APP_ID" != "$DATABRICKS_CLIENT_ID" ]]; then
+                      echo "Unexpected PROD deployment identity."
+                      echo "Expected: $DATABRICKS_CLIENT_ID"
+                      echo "Actual:   $ACTUAL_APP_ID"
+                      exit 1
+                    fi
+
+                    echo "PROD deployment identity verified."
+                  displayName: Verify PROD CD OIDC
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                # Platform idle-mode gate: reads the committed idle_mode default for prod
+                # (infrastructure/environments/prod/platform_mode.tf) and fails closed when the
+                # environment is idle, so a deploy cannot resume workloads or re-enable schedules
+                # while networking is removed (docs/runbooks/platform-idle-mode.md, ADR 0013).
+                - bash: |
+                    set -euo pipefail
+                    scripts/ci/check-platform-mode.sh prod
+                  displayName: 'Platform mode gate (prod must be ACTIVE)'
+
+                - bash: |
+                    set -euo pipefail
+                    cd products/hello-databricks
+
+                    databricks bundle validate -t prod
+                    databricks bundle plan -t prod
+                    databricks bundle deploy -t prod
+                    databricks bundle run -t prod hello_databricks
+                  displayName: Validate, Plan, Deploy and Run PROD Bundle
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+                - bash: |
+                    set -euo pipefail
+
+                    databricks tables get \
+                      prod.hello_databricks.bundle_test_output \
+                      -o json \
+                      | jq '{
+                          full_name,
+                          table_type,
+                          data_source_format,
+                          storage_location
+                        }'
+                  displayName: Verify PROD Output Table
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "engineering-test-platform.fullname" . }}
+  labels:
+    {{- include "engineering-test-platform.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      # Named target port: the Service keeps working if the container port is
+      # ever renumbered, as long as the name holds.
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "engineering-test-platform.selectorLabels" . | nindent 4 }}

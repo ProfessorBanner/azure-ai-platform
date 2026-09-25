@@ -1,0 +1,54 @@
+{
+  "$comment": [
+    "Gated thresholds for the Phase 16.3A risk evaluation.",
+    "Version-controlled on purpose: changing what 'good enough' means is a",
+    "reviewable decision, not a runtime flag. `gated: true` metrics decide the",
+    "CLI exit code; `gated: false` metrics are reported for observation only.",
+    "Bounds are deliberately modest. This is a capability lab on a minimum-",
+    "capacity deployment, not a model quality benchmark, and a threshold that",
+    "fails on ordinary variance teaches nothing."
+  ],
+  "version": 1,
+  "thresholds": {
+    "schema_validity_rate": {
+      "gated": true,
+      "minimum": 1.0,
+      "rationale": "Structured output is the capability under test. Any schema failure is a real finding, so this is the one metric held at 100%."
+    },
+    "classification_accuracy": {
+      "gated": true,
+      "minimum": 0.75,
+      "rationale": "Six-way classification over deliberately borderline cases; well above the 0.17 chance rate while tolerating genuine ambiguity."
+    },
+    "escalation_accuracy": {
+      "gated": true,
+      "minimum": 0.75,
+      "rationale": "Binary decision balanced 6/6 in the dataset, so 0.5 is chance. 0.75 requires real signal."
+    },
+    "evidence_validity_rate": {
+      "gated": true,
+      "minimum": 0.9,
+      "rationale": "Evidence ids are copied verbatim from the observation. Inventing one is fabrication, which matters more than a debatable severity."
+    },
+    "repeated_call_consistency": {
+      "gated": true,
+      "minimum": 0.6,
+      "rationale": "Fraction of cases whose repetitions all agree. Sampling makes some disagreement expected; collapse below this means results are not reproducible enough to trust."
+    },
+    "provider_error_rate": {
+      "gated": true,
+      "maximum": 0.1,
+      "rationale": "Transport and rate-limit failures are tolerable in small numbers on a capacity-1 deployment; a sustained rate means the endpoint, not the model, is the problem."
+    },
+    "severity_accuracy": {
+      "gated": false,
+      "minimum": 0.6,
+      "rationale": "Observational only. Severity is the most subjective field in the schema and is not a fair gate for a lab."
+    },
+    "latency_p95_ms": {
+      "gated": false,
+      "maximum": 15000.0,
+      "rationale": "Observational only. Latency on a shared sandbox deployment says more about the service than about this code."
+    }
+  }
+}
